@@ -2580,8 +2580,10 @@ renderMain();
 
   // ─── 将云端数据写入 localStorage + 同步内存状态 ───
   function setLocalData(data){
+    _skipSyncTrigger = true;
     if(data.tasks) localStorage.setItem(cb.STORAGE_PREFIX + 'tasks', JSON.stringify(data.tasks));
     if(data.groups) localStorage.setItem(cb.STORAGE_PREFIX + 'groups', JSON.stringify(data.groups));
+    _skipSyncTrigger = false;
     // [FIX] 同步更新主应用内存中的 tasks/groups，避免下次 getLocalData 读到旧数据导致云端覆盖
     if(data.tasks) cb.tasks = data.tasks;
     if(data.groups) cb.groups = data.groups;
@@ -2840,15 +2842,16 @@ renderMain();
     if(autoSyncTimer) clearInterval(autoSyncTimer);
     autoSyncTimer = setInterval(function(){
       if(gistId && !syncing && Date.now() >= nextRetryTime) doSync();
-    }, 120000); // 2 分钟
+    }, 600000); // 10 分钟兜底，主要靠数据变更触发同步
   }
 
   // ─── 拦截 localStorage.setItem，检测变化后触发同步 ───
   var _nativeSetItem = Storage.prototype.setItem;
   var _syncDebounce = null;
+  var _skipSyncTrigger = false; // setLocalData 写入时跳过同步调度
   Storage.prototype.setItem = function(key, value){
     _nativeSetItem.call(this, key, value);
-    if(key === cb.STORAGE_PREFIX + 'tasks' || key === cb.STORAGE_PREFIX + 'groups'){
+    if(!_skipSyncTrigger && (key === cb.STORAGE_PREFIX + 'tasks' || key === cb.STORAGE_PREFIX + 'groups')){
       // 数据变化，延迟触发云端同步
       if(_syncDebounce) clearTimeout(_syncDebounce);
       _syncDebounce = setTimeout(function(){
