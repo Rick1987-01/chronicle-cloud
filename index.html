@@ -2845,9 +2845,28 @@ renderMain();
       if(_syncDebounce) clearTimeout(_syncDebounce);
       _syncDebounce = setTimeout(function(){
         if(gistId && !syncing && Date.now() >= nextRetryTime) doSync();
-      }, 10000); // 10 秒防抖
+      }, 3000); // 3 秒防抖
     }
   };
+
+  // ─── 页面关闭/切后台时立即同步到云端 ───
+  function syncBeacon(){
+    if(!gistId) return;
+    var data = getLocalData();
+    // 用 keepalive 保证页面关闭后请求仍能发出
+    fetch(API + '/gist-write', {
+      method: 'POST',
+      headers: { 'X-Gist-ID': gistId, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: data }),
+      keepalive: true
+    }).catch(function(){});
+  }
+  // 页面关闭时
+  window.addEventListener('beforeunload', syncBeacon);
+  // 页面切后台时（手机切换 App、电脑切 tab）
+  document.addEventListener('visibilitychange', function(){
+    if(document.hidden && gistId && !syncing) syncBeacon();
+  });
 
   // ─── 页面启动时：有云端则先拉取 ───
   async function init(){
