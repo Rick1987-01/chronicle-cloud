@@ -742,6 +742,7 @@ var TASKS_PER_PAGE = 40;
 var prevStreak = 0;
 var sidebarCache = null;
 var sidebarCacheKey = '';
+var _firstRender = true; // 只在首次渲染时播放 fadeUp 动画，避免重渲染时内容跳动
 var _catCountCache = null;
 var _catCountCacheKey = '';
 
@@ -1755,6 +1756,7 @@ function renderMain(){
     else if(currentView === 'calendar') renderCalendar(content);
     else if(currentView === 'tasks') renderTasks(content);
     else renderStats(content);
+    _firstRender = false; // 首次渲染完成后关闭动画
   } catch(err) {
     // [Q5 FIX] Error boundary — show friendly message instead of white screen
     console.error('Render error:', err);
@@ -1763,7 +1765,7 @@ function renderMain(){
 }
 
 function renderOnboarding(el){
-  el.innerHTML = '<div class="onboarding anim">'
+  el.innerHTML = '<div class="onboarding ' + (_firstRender ? 'anim ' : '') + '">'
     + '<h2>欢迎使用 Chronicle</h2>'
     + '<p>一个简洁的个人生活追踪工具，帮你记录日常、追踪进步。</p>'
     + '<div class="steps">'
@@ -1865,7 +1867,7 @@ function renderToday(el){
   var deltaClass = delta > 0 ? 'up' : (delta < 0 ? 'down' : '');
   var deltaText = delta > 0 ? '↑ 比昨天多 ' + delta + ' 条' : (delta < 0 ? '↓ 比昨天少 ' + Math.abs(delta) + ' 条' : '与昨天持平');
 
-  el.innerHTML = '<div class="anim today-wrap">'
+  el.innerHTML = '<div class="' + (_firstRender ? 'anim ' : '') + 'today-wrap">'
     + '<div class="today-header">'
     + '<h2>' + today.replace(/-/g, '/') + ' · 今天</h2>'
     + '<div class="today-streak">'
@@ -2059,7 +2061,7 @@ function renderCalendar(el){
   var dayTasks = (tmap[selectedDate] || []).sort(function(a,b){ return (b.createdAt || '').localeCompare(a.createdAt || ''); });
   var months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
 
-  el.innerHTML = '<div class="anim">'
+  el.innerHTML = '<div class="' + (_firstRender ? 'anim ' : '') + '">'
     + '<div class="cal-head"><h2 class="cal-title" id="cal-t">' + currentMonth.getFullYear() + '年 ' + months[currentMonth.getMonth()] + '</h2>'
     + '<div class="cal-nav"><button id="pm">‹</button><button id="tm" title="今天">●</button><button id="nm">›</button></div></div>'
     + '<div class="cal-grid">'
@@ -2149,7 +2151,7 @@ function renderTasks(el){
   var _tsSearchVal = '';
   var hasMore = (tasksPage + 1) * TASKS_PER_PAGE < total;
 
-  el.innerHTML = '<div class="anim">'
+  el.innerHTML = '<div class="' + (_firstRender ? 'anim ' : '') + '">'
     + '<div class="tv-head"><h2>所有记录 <span style="font-size:.72rem;color:var(--text-muted)" id="ts-count">' + total + ' 条</span></h2>'
     + '<div class="tv-controls">'
     + '<div class="view-toggle"><button class="' + (taskViewMode==='flat'?'on':'') + '" data-vm="flat">列表</button><button class="' + (taskViewMode==='grouped'?'on':'') + '" data-vm="grouped">分组</button></div>'
@@ -2500,7 +2502,7 @@ function renderStats(el){
     });
   }
 
-  el.innerHTML = '<div class="anim">'
+  el.innerHTML = '<div class="' + (_firstRender ? 'anim ' : '') + '">'
     + '<h2 style="font-family:\'DM Serif Display\',serif;font-size:1.3rem;margin-bottom:14px">数据统计</h2>'
     + '<div class="sg"><div class="sc"><h4>总记录数</h4><div class="sb">' + tasks.length + '</div><div class="ss">跨越 ' + totalDays + ' 天</div></div>'
     + '<div class="sc"><h4>当前连续</h4><div class="sb">' + calcStreak() + '</div><div class="ss">天</div></div>'
@@ -2689,6 +2691,7 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
   var syncing = false;
   var autoSyncTimer = null;
   var nextRetryTime = 0; // 速率限制退避时间戳
+  var _suppressOnDataChanged = false; // 同步期间屏蔽 onDataChanged，防止 cleanEmptyGroups → persist → sync 死循环
 
   // ─── 在右上角插入同步按钮 ───
   function injectButtons(){
@@ -2762,18 +2765,32 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
 
   // ─── 将云端数据写入 localStorage + 同步内存状态 ───
   function setLocalData(data){
-    if(data.tasks) localStorage.setItem(cb.STORAGE_PREFIX + 'tasks', JSON.stringify(data.tasks));
-    if(data.groups) localStorage.setItem(cb.STORAGE_PREFIX + 'groups', JSON.stringify(data.groups));
+    var changed = false;
+    if(data.tasks){
+      var newTasks = JSON.stringify(data.tasks);
+      var oldTasks = JSON.stringify(cb.tasks);
+      if(newTasks !== oldTasks){
+        localStorage.setItem(cb.STORAGE_PREFIX + 'tasks', newTasks);
+        cb.tasks = data.tasks;
+        changed = true;
+      }
+    }
+    if(data.groups){
+      var newGroups = JSON.stringify(data.groups);
+      var oldGroups = JSON.stringify(cb.groups);
+      if(newGroups !== oldGroups){
+        localStorage.setItem(cb.STORAGE_PREFIX + 'groups', newGroups);
+        cb.groups = data.groups;
+        changed = true;
+      }
+    }
     if(data.tombstones) localStorage.setItem(cb.STORAGE_PREFIX + 'tombstones', JSON.stringify(data.tombstones));
-    // [FIX] 同步更新主应用内存中的 tasks/groups，避免下次 getLocalData 读到旧数据导致云端覆盖
-    if(data.tasks) cb.tasks = data.tasks;
-    if(data.groups) cb.groups = data.groups;
     // [FIX] 合并后清理空分组（墓碑可能删掉了分组下所有任务）
     if(cb.cleanEmptyGroups) cb.cleanEmptyGroups();
     // 强制触发主应用重新渲染 + 存储缓存失效
     cb.invalidateDateSet();
     cb.invalidateStorageCache && cb.invalidateStorageCache();
-    cb.renderMain();
+    if(changed) cb.renderMain(); // 只在数据真正变化时才重渲染，避免无意义跳动
   }
 
   // ─── 合并策略：以 id 为主键 + 墓碑过滤 ───
@@ -2906,6 +2923,7 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
     }
 
     syncing = true;
+    _suppressOnDataChanged = true; // 同步期间屏蔽回调，防止死循环
     var syncBtn = document.getElementById('cloud-sync-btn');
     if(syncBtn) syncBtn.style.opacity = '0.5';
 
@@ -2943,6 +2961,7 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
       cb.toast('同步异常: ' + e.message, 'warn');
     }
     syncing = false;
+    _suppressOnDataChanged = false; // 恢复回调
     if(syncBtn) syncBtn.style.opacity = '1';
   }
 
@@ -3091,6 +3110,7 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
   // ─── 用户数据变更时触发同步（由主应用 persist() 调用）──
   var _syncDebounce = null;
   cb.onDataChanged = function(){
+    if(_suppressOnDataChanged) return; // 同步期间不触发，防止死循环
     if(_syncDebounce) clearTimeout(_syncDebounce);
     _syncDebounce = setTimeout(function(){
       if(gistId && !syncing && Date.now() >= nextRetryTime) doSync();
