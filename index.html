@@ -2548,11 +2548,13 @@ renderMain();
     var setupBtn = document.getElementById('cloud-setup-btn');
     if(setupBtn){
       if(gistId){
-        setupBtn.title = '已绑定云端 Gist: ' + gistId;
+        setupBtn.title = '已绑定云端\nGist ID: ' + gistId + '\n点击管理';
         setupBtn.style.borderColor = 'var(--accent)';
         setupBtn.style.color = 'var(--accent)';
       } else {
-        setupBtn.title = '点击绑定云端';
+        setupBtn.title = '点击绑定云端（可输入已有 Gist ID）';
+        setupBtn.style.borderColor = '';
+        setupBtn.style.color = '';
       }
     }
   }
@@ -2704,21 +2706,81 @@ renderMain();
   // ─── 绑定/初始化云端 ───
   async function doSetup(){
     if(gistId){
-      // 已绑定，显示信息
-      var action = confirm('已绑定 Gist: ' + gistId + '\n\n点击"确定" = 重新同步一次\n点击"取消" = 解除绑定并重新创建');
-      if(action){
+      // 已绑定，显示信息和操作选项
+      var choice = prompt(
+        '✅ 已绑定云端\n\nGist ID: ' + gistId + '\n\n' +
+        '输入以下数字执行操作：\n' +
+        '1 = 同步到云端\n' +
+        '2 = 复制 Gist ID（用于其他设备）\n' +
+        '3 = 解除绑定\n' +
+        '取消 = 关闭',
+        '1'
+      );
+      if(choice === '1'){
         doSync();
-      } else {
-        // 解除绑定
-        localStorage.removeItem(cb.STORAGE_PREFIX + 'cloud_gist_id');
-        gistId = null;
-        updateButtonState();
-        cb.toast('已解除云端绑定', 'info');
+      } else if(choice === '2'){
+        try {
+          await navigator.clipboard.writeText(gistId);
+          cb.toast('📋 Gist ID 已复制到剪贴板', 'ok');
+        } catch(e){
+          prompt('请手动复制以下 Gist ID：', gistId);
+        }
+      } else if(choice === '3'){
+        if(confirm('确定要解除云端绑定？\n（本地数据不会删除，只是断开云端连接）')){
+          localStorage.removeItem(cb.STORAGE_PREFIX + 'cloud_gist_id');
+          gistId = null;
+          updateButtonState();
+          cb.toast('已解除云端绑定', 'info');
+        }
       }
       return;
     }
 
-    // 未绑定，创建新 Gist
+    // 未绑定：先询问是否已有 Gist ID
+    var existingId = prompt(
+      '🔗 绑定云端同步\n\n' +
+      '如果你在其他设备已经绑定过云端，\n' +
+      '请粘贴之前的 Gist ID：\n\n' +
+      '（留空或点取消 = 创建新的云端空间）',
+      ''
+    );
+
+    // 用户输入了 Gist ID，验证并绑定
+    if(existingId !== null && existingId.trim() !== ''){
+      existingId = existingId.trim();
+      try {
+        cb.toast('正在验证 Gist ID...', 'info');
+        // 尝试读取来验证 ID 有效
+        var resp = await fetch(API + '/gist-read', {
+          headers: { 'X-Gist-ID': existingId }
+        });
+        if(!resp.ok){
+          var errData = await resp.json().catch(function(){ return {}; });
+          cb.toast('❌ Gist ID 无效: ' + (errData.error || resp.status), 'warn');
+          return;
+        }
+        // 验证通过，绑定
+        gistId = existingId;
+        localStorage.setItem(cb.STORAGE_PREFIX + 'cloud_gist_id', gistId);
+        updateButtonState();
+        // 立即拉取云端数据
+        var remoteData = await pullFromCloud();
+        if(remoteData){
+          setLocalData(remoteData);
+          cb.invalidateDateSet();
+          cb.renderMain();
+          cb.toast('☁️ 已绑定并加载云端数据！', 'ok');
+        } else {
+          cb.toast('✅ 已绑定云端，但云端暂无数据', 'ok');
+        }
+        startAutoSync();
+      } catch(e){
+        cb.toast('验证失败: ' + e.message, 'warn');
+      }
+      return;
+    }
+
+    // 用户取消或留空，创建新 Gist
     try {
       cb.toast('正在创建云端空间...', 'info');
       var newId = await createGist();
@@ -2729,10 +2791,19 @@ renderMain();
       // 首次同步：推送到云端
       var ok = await pushToCloud(getLocalData());
       if(ok){
-        cb.toast('☁️ 云端绑定成功！Gist ID: ' + gistId, 'ok');
+        // 用 prompt 显示 Gist ID，方便用户复制
+        prompt(
+          '☁️ 云端绑定成功！\n\n请复制下面的 Gist ID，\n在其他设备上点 🔗 按钮时粘贴，即可同步数据：',
+          gistId
+        );
+        cb.toast('☁️ 云端已就绪', 'ok');
       } else {
-        cb.toast('Gist 已创建但同步失败，请手动点击 ☁️', 'warn');
+        prompt(
+          'Gist 已创建但同步失败，请手动点击 ☁️\n\n请复制 Gist ID 备用：',
+          gistId
+        );
       }
+      startAutoSync();
     } catch(e){
       cb.toast('绑定失败: ' + e.message, 'warn');
     }
