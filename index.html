@@ -3162,6 +3162,8 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
     }
   }
   window.addEventListener('chronicle:ready', onReady);
+  // [FIX] 主脚本先执行完毕时 chronicle:ready 已派发，需要立即初始化
+  if(cb.onReady) init();
 
   // [FIX] 离线恢复：网络恢复时立即触发同步
   window.addEventListener('online', function(){
