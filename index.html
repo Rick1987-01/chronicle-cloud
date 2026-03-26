@@ -2469,7 +2469,12 @@ root._cb = {
   load: load,
   save: save,
   toast: toast,
-  STORAGE_PREFIX: STORAGE_PREFIX
+  STORAGE_PREFIX: STORAGE_PREFIX,
+  // [FIX] 暴露内存引用，使云端同步可直接更新内存状态
+  get tasks(){ return tasks; },
+  set tasks(v){ tasks = v; },
+  get groups(){ return groups; },
+  set groups(v){ groups = v; }
 };
 
 // ========== INIT ==========
@@ -2573,10 +2578,13 @@ renderMain();
     return { tasks: tasks, groups: groups, version: 2, syncedAt: new Date().toISOString() };
   }
 
-  // ─── 将云端数据写入 localStorage ───
+  // ─── 将云端数据写入 localStorage + 同步内存状态 ───
   function setLocalData(data){
     if(data.tasks) localStorage.setItem(cb.STORAGE_PREFIX + 'tasks', JSON.stringify(data.tasks));
     if(data.groups) localStorage.setItem(cb.STORAGE_PREFIX + 'groups', JSON.stringify(data.groups));
+    // [FIX] 同步更新主应用内存中的 tasks/groups，避免下次 getLocalData 读到旧数据导致云端覆盖
+    if(data.tasks) cb.tasks = data.tasks;
+    if(data.groups) cb.groups = data.groups;
   }
 
   // ─── 合并策略：以 id 为主键，以 updatedAt/修改时间取最新 ───
