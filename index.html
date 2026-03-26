@@ -417,6 +417,7 @@ button:focus:not(:focus-visible){outline:none}
       <div class="modal-actions">
         <button type="button" class="btn btn-danger" id="m-del" style="display:none">删除</button>
         <div style="flex:1"></div>
+        <span style="font-size:.68rem;color:var(--text-muted);align-self:center;margin-right:8px">Ctrl+Enter 提交</span>
         <button type="button" class="btn" id="m-cancel">取消</button>
         <button type="submit" class="btn btn-p" id="m-submit">＋ 添加记录</button>
       </div>
@@ -1072,16 +1073,22 @@ mDate.addEventListener('change', function(){ updateSug(); checkDupe(); });
 
 mName.addEventListener('keydown', function(e){
   var items = mAc.querySelectorAll('.ac-item');
-  if(!items.length || mAc.className.indexOf('show') === -1){
-    if(e.key === 'Enter'){ e.preventDefault(); doSubmit(); }
+  // Autocomplete navigation
+  if(items.length && mAc.className.indexOf('show') !== -1){
+    if(e.key === 'ArrowDown'){ e.preventDefault(); hlIdx = Math.min(hlIdx+1, items.length-1); }
+    else if(e.key === 'ArrowUp'){ e.preventDefault(); hlIdx = Math.max(hlIdx-1, 0); }
+    else if(e.key === 'Enter' && hlIdx >= 0){ e.preventDefault(); items[hlIdx].dispatchEvent(new MouseEvent('mousedown')); return; }
+    else if(e.key === 'Escape'){ mAc.className = 'ac-drop'; return; }
+    else if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); doSubmit(); return; }
+    else return;
+    items.forEach(function(it, i){ it.className = 'ac-item' + (i === hlIdx ? ' hl' : ''); });
     return;
   }
-  if(e.key === 'ArrowDown'){ e.preventDefault(); hlIdx = Math.min(hlIdx+1, items.length-1); }
-  else if(e.key === 'ArrowUp'){ e.preventDefault(); hlIdx = Math.max(hlIdx-1, 0); }
-  else if(e.key === 'Enter' && hlIdx >= 0){ e.preventDefault(); items[hlIdx].dispatchEvent(new MouseEvent('mousedown')); return; }
-  else if(e.key === 'Escape'){ mAc.className = 'ac-drop'; return; }
-  else return;
-  items.forEach(function(it, i){ it.className = 'ac-item' + (i === hlIdx ? ' hl' : ''); });
+  // Enter = newline, Ctrl/Cmd+Enter = submit
+  if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)){
+    e.preventDefault();
+    doSubmit();
+  }
 });
 
 function updateAC(){
@@ -1451,6 +1458,7 @@ document.getElementById('e-file').addEventListener('change', function(e){
         existingContentKeys.add(contentKey);
         imported++;
       });
+      cleanEmptyGroups();
       invalidateDateSet();
       persist();
       toast('导入完成：' + imported + ' 条新记录', 'ok');
@@ -2617,9 +2625,11 @@ function drawPie(id, data){
 // Expose key functions/refs so the external cloud-sync script can hook in
 root._cb = {
   persistNow: persistNow,
+  persist: persist,
   renderMain: renderMain,
   invalidateDateSet: invalidateDateSet,
   invalidateStorageCache: invalidateStorageCache,
+  cleanEmptyGroups: cleanEmptyGroups,
   load: load,
   save: save,
   toast: toast,
@@ -2758,6 +2768,8 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
     // [FIX] 同步更新主应用内存中的 tasks/groups，避免下次 getLocalData 读到旧数据导致云端覆盖
     if(data.tasks) cb.tasks = data.tasks;
     if(data.groups) cb.groups = data.groups;
+    // [FIX] 合并后清理空分组（墓碑可能删掉了分组下所有任务）
+    if(cb.cleanEmptyGroups) cb.cleanEmptyGroups();
     // 强制触发主应用重新渲染 + 存储缓存失效
     cb.invalidateDateSet();
     cb.invalidateStorageCache && cb.invalidateStorageCache();
