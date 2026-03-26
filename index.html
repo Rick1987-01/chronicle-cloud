@@ -1757,6 +1757,8 @@ function renderMain(){
     else if(currentView === 'tasks') renderTasks(content);
     else renderStats(content);
     _firstRender = false; // 首次渲染完成后关闭动画
+    // 重新注入云端同步按钮（renderMain 会覆盖 innerHTML 导致动态按钮丢失）
+    if(root._cb && root._cb.reinjectCloudUI) root._cb.reinjectCloudUI();
   } catch(err) {
     // [Q5 FIX] Error boundary — show friendly message instead of white screen
     console.error('Render error:', err);
@@ -2644,7 +2646,8 @@ root._cb = {
   get groups(){ return groups; },
   set groups(v){ groups = v; },
   onDataChanged: null, // 由云端同步模块赋值
-  onReady: null        // 由主应用初始化完成后调用
+  onReady: null,       // 由主应用初始化完成后调用
+  reinjectCloudUI: null // 由云端同步模块赋值，renderMain 后调用以恢复被覆盖的按钮
 };
 
 // ========== INIT ==========
@@ -3144,6 +3147,7 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
   // ─── 页面启动时：有云端则同步 ───
   async function init(){
     injectButtons();
+    cb.reinjectCloudUI = injectButtons; // 暴露给主应用，renderMain 后可重新注入按钮
     if(gistId){
       // 启动时执行一次完整的同步（拉取+合并+推送）
       doSync();
