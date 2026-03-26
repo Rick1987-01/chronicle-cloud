@@ -494,6 +494,7 @@ button:focus:not(:focus-visible){outline:none}
 // ========== THEME ==========
 var STORAGE_PREFIX = 'chr_';
 var EXPORT_VERSION = 3; // bumped: requires migration for v2 imports
+var TOMBSTONE_MAX_AGE = 30 * 24 * 3600 * 1000; // 墓碑保留 30 天（统一常量）
 
 var theme = localStorage.getItem(STORAGE_PREFIX + 'theme') || 'light';
 document.documentElement.setAttribute('data-theme', theme);
@@ -522,7 +523,7 @@ function parseDate(s){
 function fmtDate(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function diffDays(a,b){
   var da = parseDate(a), db = parseDate(b);
-  if(!da || !db) return 0;
+  if(!da || !db) return NaN; // [FIX] 返回 NaN 而非 0，避免将无效日期误判为"同一天"
   return Math.round((db-da)/86400000);
 }
 function addDays(d,n){ var r=new Date(d); r.setDate(r.getDate()+n); return r; }
@@ -632,7 +633,7 @@ function addTombstones(type, ids){
   save('tombstones', tbs);
 }
 function pruneTombstones(maxAgeMs){
-  maxAgeMs = maxAgeMs || 30 * 24 * 3600 * 1000;
+  maxAgeMs = maxAgeMs || TOMBSTONE_MAX_AGE; // [FIX] 使用统一常量
   var tbs = loadTombstones();
   var cutoff = Date.now() - maxAgeMs;
   var changed = false;
@@ -643,6 +644,14 @@ function pruneTombstones(maxAgeMs){
 }
 
 function checkStorageCapacity(){
+  // [FIX #6] 用缓存累计避免每次 persist 都遍历全部 localStorage
+  // 只在数据变更时更新缓存值
+  if(typeof checkStorageCapacity._cachedTotal !== 'undefined'){
+    var pct = Math.round(checkStorageCapacity._cachedTotal / 5242880 * 100);
+    if(pct >= 90) toast('⚠️ 存储空间已用 ' + pct + '%，请尽快导出备份！', 'warn');
+    else if(pct >= 75) toast('存储空间已用 ' + pct + '%，建议导出备份', 'info');
+    return pct;
+  }
   var total = 0;
   try {
     for(var i = 0; i < localStorage.length; i++){
@@ -652,11 +661,13 @@ function checkStorageCapacity(){
       }
     }
   } catch(e) { return 0; }
+  checkStorageCapacity._cachedTotal = total;
   var pct = Math.round(total / 5242880 * 100);
   if(pct >= 90) toast('⚠️ 存储空间已用 ' + pct + '%，请尽快导出备份！', 'warn');
   else if(pct >= 75) toast('存储空间已用 ' + pct + '%，建议导出备份', 'info');
   return pct;
 }
+function invalidateStorageCache(){ checkStorageCapacity._cachedTotal = undefined; }
 
 // [Q3 FIX] Safe toast — always escapes message
 function toast(msg, type, undoFn){
@@ -681,6 +692,7 @@ function toast(msg, type, undoFn){
 }
 
 function humanInterval(days){
+  if(isNaN(days)) return '未知';
   if(days < 0) return '未来 ' + Math.abs(days) + ' 天';
   if(days === 0) return '今天';
   if(days === 1) return '昨天';
@@ -737,6 +749,7 @@ var _persistTimer = null;
 function persist(){
   if(_persistTimer) clearTimeout(_persistTimer);
   _persistTimer = setTimeout(function(){
+    invalidateStorageCache();
     save('tasks', tasks);
     save('groups', groups);
     checkStorageCapacity();
@@ -748,6 +761,9 @@ function persistNow(){
   if(_persistTimer){ clearTimeout(_persistTimer); _persistTimer = null; }
   save('tasks', tasks);
   save('groups', groups);
+  // [FIX] 缓存失效放在 save 之后，确保下次读取时缓存是空的（触发重算）
+  invalidateStorageCache();
+  checkStorageCapacity();
   if(root._cb && root._cb.onDataChanged) root._cb.onDataChanged();
 }
 
@@ -1106,7 +1122,7 @@ function updateSug(){
   var gt = tasks.filter(function(t){ return t.groupId === match.id; }).sort(function(a,b){ return b.date.localeCompare(a.date); });
   if(!gt.length){ mSug.innerHTML = ''; return; }
   var days = diffDays(gt[0].date, mDate.value);
-  if(days <= 0){ mSug.innerHTML = ''; return; }
+  if(isNaN(days) || days <= 0){ mSug.innerHTML = ''; return; }
   var interval = humanInterval(days);
   var countStr = '，第 <b>' + (gt.length + 1) + '</b> 次';
   mSug.innerHTML = '<div class="sug show"><span>💡</span><span>距离上次「<b>' + esc(match.name) + '</b>」' + interval + '（' + days + '天）' + countStr + '</span><button class="sug-x" id="m-sx">✕</button></div>';
@@ -1382,6 +1398,7 @@ document.getElementById('e-file').addEventListener('change', function(e){
           note: typeof t.note === 'string' ? t.note.slice(0, 500) : null,
           groupId: typeof t.groupId === 'string' ? t.groupId : null,
           createdAt: typeof t.createdAt === 'string' ? t.createdAt : null,
+          updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : null,
           remindDate: typeof t.remindDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(t.remindDate) ? t.remindDate : null
         };
       });
@@ -1394,7 +1411,8 @@ document.getElementById('e-file').addEventListener('change', function(e){
           name: g.name.slice(0, 100),
           category: typeof g.category === 'string' ? g.category : 'other',
           aliases: Array.isArray(g.aliases) ? g.aliases.filter(function(a){ return typeof a === 'string'; }).slice(0, 20) : [],
-          createdAt: typeof g.createdAt === 'string' ? g.createdAt : null
+          createdAt: typeof g.createdAt === 'string' ? g.createdAt : null,
+          updatedAt: typeof g.updatedAt === 'string' ? g.updatedAt : null
         };
       });
 
@@ -1458,25 +1476,25 @@ document.getElementById('e-cleanup').addEventListener('click', function(){
   var toRemove = tasks.filter(function(t){ return t.date < cutoff; });
   if(!toRemove.length){ toast('没有 ' + days + ' 天前的旧数据', 'info'); return; }
   exportBg.classList.remove('open');
-  confirmCallback = null;
+  // [FIX #2] 先设置 callback，再打开确认框，避免被其他代码覆盖
   cBody.innerHTML = '即将删除 <b>' + toRemove.length + '</b> 条 ' + cutoff + ' 之前的记录。<br><b style="color:var(--red)">此操作不可撤销，建议先导出备份。</b>';
   cOk.textContent = '确认清理';
   cOk.disabled = true;
   confirmNeedsTyping = true;
   cInputWrap.style.display = 'flex';
   cInput.value = '';
-  confirmBg.classList.add('open');
-  setTimeout(function(){ cInput.focus(); }, 100);
-    confirmCallback = function(){
-      var removedIds = Array.from(new Set(toRemove.map(function(t){ return t.id; })));
-      addTombstones('task', removedIds);
-      tasks = tasks.filter(function(t){ return !removedIds.includes(t.id); });
-      cleanEmptyGroups();
+  confirmCallback = function(){
+    var removedIds = Array.from(new Set(toRemove.map(function(t){ return t.id; })));
+    addTombstones('task', removedIds);
+    tasks = tasks.filter(function(t){ return !removedIds.includes(t.id); });
+    cleanEmptyGroups();
     invalidateDateSet();
     persist();
     toast('已清理 ' + toRemove.length + ' 条旧记录', 'warn');
     renderMain();
   };
+  confirmBg.classList.add('open');
+  setTimeout(function(){ cInput.focus(); }, 100);
 });
 
 // ========== RENAME GROUP ==========
@@ -2576,10 +2594,21 @@ function drawPie(id, data){
   });
   ctx.fillStyle = cc.text; ctx.font = '400 22px "DM Serif Display"'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(total, cx, cy - 5);
   ctx.fillStyle = cc.muted; ctx.font = '12px DM Mono'; ctx.fillText('条记录', cx, cy + 12);
-  var ly = h * 0.18, lx = w * 0.7, legendSpacing = Math.min(20, (h * 0.7) / data.length);
+  var ly = h * 0.18, lx = w * 0.7;
+  // [FIX #3] 动态计算图例间距，防止标签溢出 canvas
+  var legendSpacing = Math.max(14, Math.min(20, (h * 0.72) / data.length));
+  var maxLy = h - 10; // 画布底部留 10px 边距
   data.forEach(function(d, i){
+    if(ly > maxLy) return; // 超出画布则截断
     ctx.fillStyle = colors[i % colors.length]; ctx.beginPath(); ctx.arc(lx, ly, 3, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = cc.muted; ctx.font = '12px DM Mono'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText(d.name + ' (' + d.value + ')', lx + 8, ly);
+    ctx.fillStyle = cc.muted; ctx.font = '12px DM Mono'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    // 文字过长时截断
+    var label = d.name + ' (' + d.value + ')';
+    var maxLabelWidth = w - lx - 12;
+    if(ctx.measureText(label).width > maxLabelWidth){
+      label = d.name.slice(0, Math.floor(maxLabelWidth / 7)) + '…(' + d.value + ')';
+    }
+    ctx.fillText(label, lx + 8, ly);
     ly += legendSpacing;
   });
 }
@@ -2590,20 +2619,26 @@ root._cb = {
   persistNow: persistNow,
   renderMain: renderMain,
   invalidateDateSet: invalidateDateSet,
+  invalidateStorageCache: invalidateStorageCache,
   load: load,
   save: save,
   toast: toast,
   STORAGE_PREFIX: STORAGE_PREFIX,
+  EXPORT_VERSION: EXPORT_VERSION,
+  TOMBSTONE_MAX_AGE: TOMBSTONE_MAX_AGE,
   // [FIX] 暴露内存引用，使云端同步可直接更新内存状态
   get tasks(){ return tasks; },
   set tasks(v){ tasks = v; },
   get groups(){ return groups; },
   set groups(v){ groups = v; },
-  onDataChanged: null // 由云端同步模块赋值
+  onDataChanged: null, // 由云端同步模块赋值
+  onReady: null        // 由主应用初始化完成后调用
 };
 
 // ========== INIT ==========
 // [DATA SAFETY] Persist immediately on page close to avoid losing debounced writes
+// Note: cloud sync module also registers beforeunload for syncBeacon — both will fire.
+// We flush memory → localStorage here; sync module sends to cloud with keepalive.
 window.addEventListener('beforeunload', function(){
   if(_persistTimer){ clearTimeout(_persistTimer); _persistTimer = null; }
   save('tasks', tasks);
@@ -2618,7 +2653,15 @@ window.addEventListener('resize', function(){
   }, 300);
 });
 
+// [FIX] 定期清理墓碑（每 24 小时一次，首次启动也执行）
+pruneTombstones(TOMBSTONE_MAX_AGE);
+setInterval(function(){ pruneTombstones(TOMBSTONE_MAX_AGE); }, 24 * 3600 * 1000);
+
 renderMain();
+
+// [FIX] 派发 ready 事件，让同步模块可靠地初始化
+if(root._cb) root._cb.onReady = true;
+window.dispatchEvent(new CustomEvent('chronicle:ready'));
 
 })(window);
 </script>
@@ -2704,7 +2747,7 @@ renderMain();
     try {
       tombstones = JSON.parse(localStorage.getItem(cb.STORAGE_PREFIX + 'tombstones')) || {};
     } catch(e){ tombstones = {}; }
-    return { tasks: tasks, groups: groups, tombstones: tombstones, version: 2, syncedAt: new Date().toISOString() };
+    return { tasks: tasks, groups: groups, tombstones: tombstones, version: cb.EXPORT_VERSION, syncedAt: new Date().toISOString() };
   }
 
   // ─── 将云端数据写入 localStorage + 同步内存状态 ───
@@ -2715,8 +2758,9 @@ renderMain();
     // [FIX] 同步更新主应用内存中的 tasks/groups，避免下次 getLocalData 读到旧数据导致云端覆盖
     if(data.tasks) cb.tasks = data.tasks;
     if(data.groups) cb.groups = data.groups;
-    // 强制触发主应用重新渲染
+    // 强制触发主应用重新渲染 + 存储缓存失效
     cb.invalidateDateSet();
+    cb.invalidateStorageCache && cb.invalidateStorageCache();
     cb.renderMain();
   }
 
@@ -2732,8 +2776,8 @@ renderMain();
       merged.tombstones[k] = Math.max(localTbs[k] || 0, remoteTbs[k] || 0);
     });
 
-    // 清理 30 天前的墓碑
-    var cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+    // 清理过期墓碑（使用统一常量 TOMBSTONE_MAX_AGE）
+    var cutoff = Date.now() - cb.TOMBSTONE_MAX_AGE;
     Object.keys(merged.tombstones).forEach(function(k){
       if(merged.tombstones[k] < cutoff) delete merged.tombstones[k];
     });
@@ -2751,10 +2795,14 @@ renderMain();
         if(remoteTime > localTime) taskMap[t.id] = t;
       }
     });
-    // 过滤：移除被墓碑标记的任务
-    merged.tasks = Object.values(taskMap).filter(function(t){
-      return !merged.tombstones['task:' + t.id];
-    });
+    // 过滤：移除被墓碑标记的任务（for...in 兼容旧浏览器）
+    var mergedTasks = [];
+    for(var k in taskMap){
+      if(taskMap.hasOwnProperty(k) && !merged.tombstones['task:' + taskMap[k].id]){
+        mergedTasks.push(taskMap[k]);
+      }
+    }
+    merged.tasks = mergedTasks;
 
     // Groups 合并（同样跳过墓碑标记）
     var groupMap = {};
@@ -2769,9 +2817,13 @@ renderMain();
         if(remoteTime > localTime) groupMap[g.id] = g;
       }
     });
-    merged.groups = Object.values(groupMap).filter(function(g){
-      return !merged.tombstones['group:' + g.id];
-    });
+    var mergedGroups = [];
+    for(var kg in groupMap){
+      if(groupMap.hasOwnProperty(kg) && !merged.tombstones['group:' + groupMap[kg].id]){
+        mergedGroups.push(groupMap[kg]);
+      }
+    }
+    merged.groups = mergedGroups;
 
     return merged;
   }
@@ -2835,37 +2887,45 @@ renderMain();
     }
     if(Date.now() < nextRetryTime) return;
 
+    // [FIX] 离线检测：无网络时跳过同步
+    if(typeof navigator !== 'undefined' && navigator.onLine === false){
+      cb.toast('📡 当前离线，恢复网络后自动同步', 'info');
+      return;
+    }
+
     syncing = true;
     var syncBtn = document.getElementById('cloud-sync-btn');
     if(syncBtn) syncBtn.style.opacity = '0.5';
 
     try {
-      // 1. 先拉取云端数据
+      // 1. 先拉取云端数据（在读取本地之前拉取，避免竞态）
       var remoteData = await pullFromCloud();
-      var localData = getLocalData();
+
+      // 2. 拉取完成后再从内存读取最新本地数据（而非 localStorage，避免读到旧快照）
+      var localData = {
+        tasks: cb.tasks,
+        groups: cb.groups,
+        tombstones: JSON.parse(localStorage.getItem(cb.STORAGE_PREFIX + 'tombstones') || '{}'),
+        version: cb.EXPORT_VERSION,
+        syncedAt: new Date().toISOString()
+      };
       var finalData = localData;
 
       if(remoteData){
-        // 2. 合并数据
+        // 3. 合并数据
         finalData = mergeData(remoteData, localData);
-        // 3. 更新本地存储和内存
+        // 4. 更新本地存储和内存
         setLocalData(finalData);
       }
 
-      // 4. 推送合并后的最终数据到云端
-      var resp = await fetch(API + '/gist-write', {
-        method: 'POST',
-        headers: { 'X-Gist-ID': gistId, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: finalData })
-      });
+      // 4. 推送合并后的最终数据到云端（复用 pushToCloud）
+      var ok = await pushToCloud(finalData);
 
-      if(resp.ok){
+      if(ok){
         nextRetryTime = 0;
-      } else if(resp.status === 403 || resp.status === 429){
-        nextRetryTime = Date.now() + 5 * 60 * 1000;
-        cb.toast('⏳ 速率限制，5分钟后重试', 'warn');
       } else {
-        cb.toast('同步失败: ' + resp.status, 'warn');
+        nextRetryTime = Date.now() + 5 * 60 * 1000;
+        cb.toast('⏳ 同步暂时失败，5分钟后重试', 'warn');
       }
     } catch(e){
       cb.toast('同步异常: ' + e.message, 'warn');
@@ -2877,6 +2937,9 @@ renderMain();
   // ─── 手动从云端拉取（覆盖本地）──
   async function doPull(){
     if(!gistId){ cb.toast('未绑定云端', 'warn'); return; }
+    if(typeof navigator !== 'undefined' && navigator.onLine === false){
+      cb.toast('📡 当前离线，恢复网络后再试', 'warn'); return;
+    }
     if(!confirm('从云端加载会覆盖本地数据，确定？')) return;
     try {
       cb.toast('正在加载...', 'info');
@@ -2904,6 +2967,7 @@ renderMain();
         '取消 = 关闭',
         '1'
       );
+      choice = (choice || '').trim();
       if(choice === '1'){
         doSync();
       } else if(choice === '2'){
@@ -2919,6 +2983,7 @@ renderMain();
         if(confirm('确定要解除云端绑定？\n（本地数据不会删除，只是断开云端连接）')){
           localStorage.removeItem(cb.STORAGE_PREFIX + 'cloud_gist_id');
           gistId = null;
+          stopAutoSync(); // [FIX] 清除定时器，防止泄漏
           updateButtonState();
           cb.toast('已解除云端绑定', 'info');
         }
@@ -2997,12 +3062,17 @@ renderMain();
     }
   }
 
-  // ─── 自动同步（每 60 秒一次） ───
+  // ─── 自动同步（每 10 分钟兜底） ───
   function startAutoSync(){
     if(autoSyncTimer) clearInterval(autoSyncTimer);
     autoSyncTimer = setInterval(function(){
       if(gistId && !syncing && Date.now() >= nextRetryTime) doSync();
     }, 600000); // 10 分钟兜底，主要靠数据变更触发同步
+  }
+  // [FIX] 停止自动同步（解绑时调用，防止定时器泄漏）
+  function stopAutoSync(){
+    if(autoSyncTimer){ clearInterval(autoSyncTimer); autoSyncTimer = null; }
+    if(_syncDebounce){ clearTimeout(_syncDebounce); _syncDebounce = null; }
   }
 
   // ─── 拦截 localStorage.setItem，检测变化后触发同步 ───
@@ -3018,6 +3088,11 @@ renderMain();
   // ─── 页面关闭/切后台时立即同步到云端 ───
   function syncBeacon(){
     if(!gistId) return;
+    // [FIX] beacon 前直接 flush 内存到 localStorage（不触发 onDataChanged 避免死循环）
+    try {
+      localStorage.setItem(cb.STORAGE_PREFIX + 'tasks', JSON.stringify(cb.tasks));
+      localStorage.setItem(cb.STORAGE_PREFIX + 'groups', JSON.stringify(cb.groups));
+    } catch(e){}
     var data = getLocalData();
     // 用 keepalive 保证页面关闭后请求仍能发出
     fetch(API + '/gist-write', {
@@ -3044,13 +3119,30 @@ renderMain();
     }
   }
 
-  // 等 DOM 就绪后执行
-  if(document.readyState === 'loading'){
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    // DOM 已就绪，延迟执行以确保原应用已初始化
-    setTimeout(init, 500);
+  // [FIX] 监听主应用 ready 事件（替代 setTimeout 500ms hack）
+  function onReady(){
+    if(cb.onReady){
+      init();
+    }
   }
+  window.addEventListener('chronicle:ready', onReady);
+
+  // [FIX] 离线恢复：网络恢复时立即触发同步
+  window.addEventListener('online', function(){
+    if(gistId && !syncing){
+      cb.toast('📡 网络已恢复，正在同步...', 'info');
+      doSync();
+    }
+  });
+  window.addEventListener('offline', function(){
+    cb.toast('📡 网络断开，更改将在恢复后同步', 'info');
+  });
+
+  // 兜底：如果 chronicle:ready 在 DOM 加载完成后 2 秒内未触发，手动初始化
+  var _fallbackTimer = setTimeout(function(){
+    if(!cb.onReady) init();
+  }, 2000);
+  window.addEventListener('chronicle:ready', function(){ clearTimeout(_fallbackTimer); });
 
 })();
 </script>
