@@ -618,6 +618,30 @@ function save(k, d){
   }
 }
 
+// ─── Tombstone 系统：记录删除操作，防止云端同步恢复已删除条目 ───
+function loadTombstones(){ return load('tombstones', {}); }
+function addTombstone(type, id){
+  var tbs = loadTombstones();
+  tbs[type + ':' + id] = Date.now();
+  save('tombstones', tbs);
+}
+function addTombstones(type, ids){
+  var tbs = loadTombstones();
+  var now = Date.now();
+  ids.forEach(function(id){ tbs[type + ':' + id] = now; });
+  save('tombstones', tbs);
+}
+function pruneTombstones(maxAgeMs){
+  maxAgeMs = maxAgeMs || 30 * 24 * 3600 * 1000;
+  var tbs = loadTombstones();
+  var cutoff = Date.now() - maxAgeMs;
+  var changed = false;
+  Object.keys(tbs).forEach(function(k){
+    if(tbs[k] < cutoff){ delete tbs[k]; changed = true; }
+  });
+  if(changed) save('tombstones', tbs);
+}
+
 function checkStorageCapacity(){
   var total = 0;
   try {
@@ -1262,11 +1286,14 @@ function executeDelete(type, id){
     if(idx === -1) return;
     var removed = tasks.splice(idx, 1)[0];
     var removedGroup = removed.groupId ? groups.find(function(g){ return g.id === removed.groupId; }) : null;
+    addTombstone('task', removed.id);
     cleanEmptyGroups();
     invalidateDateSet();
     persist();
     toast('已删除「' + removed.name + '」', 'warn', function(){
       tasks.push(removed);
+      // 撤销删除 → 清除墓碑
+      var tbs = loadTombstones(); delete tbs['task:' + removed.id]; save('tombstones', tbs);
       if(removed.groupId && removedGroup && !groups.find(function(g){ return g.id === removed.groupId; })){
         groups.push(removedGroup);
       }
@@ -1281,11 +1308,18 @@ function executeDelete(type, id){
     var removedGroup = groups.find(function(g){ return g.id === id; });
     tasks = tasks.filter(function(t){ return t.groupId !== id; });
     groups = groups.filter(function(g){ return g.id !== id; });
+    addTombstone('group', id);
+    addTombstones('task', removedTasks.map(function(t){ return t.id; }));
     invalidateDateSet();
     persist();
     toast('已删除分组「' + (removedGroup ? removedGroup.name : '') + '」及 ' + removedTasks.length + ' 条记录', 'warn', function(){
       if(removedGroup) groups.push(removedGroup);
       removedTasks.forEach(function(t){ tasks.push(t); });
+      // 撤销删除 → 清除墓碑
+      var tbs = loadTombstones();
+      delete tbs['group:' + id];
+      removedTasks.forEach(function(t){ delete tbs['task:' + t.id]; });
+      save('tombstones', tbs);
       invalidateDateSet();
       persist();
       renderMain();
@@ -1293,6 +1327,8 @@ function executeDelete(type, id){
     });
     renderMain();
   } else if(type === 'clear'){
+    addTombstones('task', tasks.map(function(t){ return t.id; }));
+    addTombstones('group', groups.map(function(g){ return g.id; }));
     tasks = []; groups = [];
     invalidateDateSet();
     persist();
@@ -2656,23 +2692,38 @@ renderMain();
       tasks = [];
       groups = [];
     }
-    return { tasks: tasks, groups: groups, version: 2, syncedAt: new Date().toISOString() };
+    return { tasks: tasks, groups: groups, tombstones: loadTombstones(), version: 2, syncedAt: new Date().toISOString() };
   }
 
   // ─── 将云端数据写入 localStorage + 同步内存状态 ───
   function setLocalData(data){
     if(data.tasks) localStorage.setItem(cb.STORAGE_PREFIX + 'tasks', JSON.stringify(data.tasks));
     if(data.groups) localStorage.setItem(cb.STORAGE_PREFIX + 'groups', JSON.stringify(data.groups));
+    if(data.tombstones) localStorage.setItem(cb.STORAGE_PREFIX + 'tombstones', JSON.stringify(data.tombstones));
     // [FIX] 同步更新主应用内存中的 tasks/groups，避免下次 getLocalData 读到旧数据导致云端覆盖
     if(data.tasks) cb.tasks = data.tasks;
     if(data.groups) cb.groups = data.groups;
   }
 
-  // ─── 合并策略：以 id 为主键，以 updatedAt/修改时间取最新 ───
+  // ─── 合并策略：以 id 为主键 + 墓碑过滤 ───
   function mergeData(remote, local){
-    var merged = { tasks: [], groups: [] };
+    var merged = { tasks: [], groups: [], tombstones: {} };
 
-    // Tasks 合并
+    // 合并双方墓碑（取较晚的时间戳）
+    var localTbs = local.tombstones || {};
+    var remoteTbs = remote.tombstones || {};
+    var allKeys = Object.keys(localTbs).concat(Object.keys(remoteTbs));
+    allKeys.forEach(function(k){
+      merged.tombstones[k] = Math.max(localTbs[k] || 0, remoteTbs[k] || 0);
+    });
+
+    // 清理 30 天前的墓碑
+    var cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+    Object.keys(merged.tombstones).forEach(function(k){
+      if(merged.tombstones[k] < cutoff) delete merged.tombstones[k];
+    });
+
+    // Tasks 合并（跳过被墓碑标记的条目）
     var taskMap = {};
     (local.tasks || []).forEach(function(t){ taskMap[t.id] = t; });
     (remote.tasks || []).forEach(function(t){
@@ -2680,21 +2731,25 @@ renderMain();
       if(!existing){
         taskMap[t.id] = t;
       } else {
-        // 比较更新时间，保留较新的
         var localTime = existing.updatedAt || existing.createdAt || '';
         var remoteTime = t.updatedAt || t.createdAt || '';
         if(remoteTime > localTime) taskMap[t.id] = t;
       }
     });
-    merged.tasks = Object.values(taskMap);
+    // 过滤：移除被墓碑标记的任务
+    merged.tasks = Object.values(taskMap).filter(function(t){
+      return !merged.tombstones['task:' + t.id];
+    });
 
-    // Groups 合并
+    // Groups 合并（同样跳过墓碑标记）
     var groupMap = {};
     (local.groups || []).forEach(function(g){ groupMap[g.id] = g; });
     (remote.groups || []).forEach(function(g){
       if(!groupMap[g.id]) groupMap[g.id] = g;
     });
-    merged.groups = Object.values(groupMap);
+    merged.groups = Object.values(groupMap).filter(function(g){
+      return !merged.tombstones['group:' + g.id];
+    });
 
     return merged;
   }
