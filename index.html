@@ -1143,6 +1143,7 @@ function doSubmit(){
     t.name = name; t.category = mCat.value; t.date = date;
     t.note = mNote.value || null;
     t.remindDate = mRemind.value || null;
+    t.updatedAt = nowStr();
     var g = groups.find(function(g){ return g.id === t.groupId; });
     if(g){
       g.aliases = [...new Set([...(g.aliases || []).slice(-19), name])];
@@ -1466,10 +1467,11 @@ document.getElementById('e-cleanup').addEventListener('click', function(){
   cInput.value = '';
   confirmBg.classList.add('open');
   setTimeout(function(){ cInput.focus(); }, 100);
-  confirmCallback = function(){
-    var removedIds = new Set(toRemove.map(function(t){ return t.id; }));
-    tasks = tasks.filter(function(t){ return !removedIds.has(t.id); });
-    cleanEmptyGroups();
+    confirmCallback = function(){
+      var removedIds = Array.from(new Set(toRemove.map(function(t){ return t.id; })));
+      addTombstones('task', removedIds);
+      tasks = tasks.filter(function(t){ return !removedIds.includes(t.id); });
+      cleanEmptyGroups();
     invalidateDateSet();
     persist();
     toast('已清理 ' + toRemove.length + ' 条旧记录', 'warn');
@@ -1498,6 +1500,7 @@ function doRename(){
   var oldName = g.name;
   g.name = newName;
   g.aliases = [...new Set([...(g.aliases || []), oldName])];
+  g.updatedAt = nowStr();
   persist();
   toast('已重命名「' + oldName + '」→「' + newName + '」', 'ok');
   closeRenameModal();
@@ -1559,6 +1562,7 @@ function bindNoteInteractions(container){
       content.querySelector('.tnote-cancel').addEventListener('click', function(){ content.innerHTML = esc(oldNote); });
       content.querySelector('.tnote-save').addEventListener('click', function(){
         t.note = ta.value.trim() || null;
+        t.updatedAt = nowStr();
         persist();
         toast('备注已更新', 'ok');
         renderMain();
@@ -1994,9 +1998,12 @@ function renderToday(el){
           removedGroups.push(g);
           removedTasks = removedTasks.concat(gTasks);
         });
-        var removedGroupIds = new Set(inactive.map(function(g){ return g.id; }));
-        tasks = tasks.filter(function(t){ return !removedGroupIds.has(t.groupId); });
-        groups = groups.filter(function(g){ return !removedGroupIds.has(g.id); });
+        var removedGroupIds = Array.from(new Set(inactive.map(function(g){ return g.id; })));
+        var removedTaskIds = removedTasks.map(function(t){ return t.id; });
+        addTombstones('group', removedGroupIds);
+        addTombstones('task', removedTaskIds);
+        tasks = tasks.filter(function(t){ return !removedGroupIds.includes(t.groupId); });
+        groups = groups.filter(function(g){ return !removedGroupIds.includes(g.id); });
         invalidateDateSet();
         persist();
         toast('已清理 ' + inactive.length + ' 个分组（' + removedTasks.length + ' 条记录）', 'warn', function(){
@@ -2175,25 +2182,26 @@ function renderTasks(el){
     cOk.disabled = false;
     cInputWrap.style.display = 'none';
     confirmBg.classList.add('open');
-    confirmCallback = function(){
-      // Save removed items for undo
-      var removedItems = [];
-      var removedGroups = [];
-      ids.forEach(function(id){
-        var idx = tasks.findIndex(function(t){ return t.id === id; });
-        if(idx !== -1){
-          var removed = tasks.splice(idx, 1)[0];
-          removedItems.push(removed);
-          if(removed.groupId){
-            var rg = groups.find(function(g){ return g.id === removed.groupId; });
-            if(rg && !removedGroups.some(function(x){ return x.id === rg.id; })) removedGroups.push(rg);
+      confirmCallback = function(){
+        // Save removed items for undo
+        var removedItems = [];
+        var removedGroups = [];
+        ids.forEach(function(id){
+          var idx = tasks.findIndex(function(t){ return t.id === id; });
+          if(idx !== -1){
+            var removed = tasks.splice(idx, 1)[0];
+            removedItems.push(removed);
+            if(removed.groupId){
+              var rg = groups.find(function(g){ return g.id === removed.groupId; });
+              if(rg && !removedGroups.some(function(x){ return x.id === rg.id; })) removedGroups.push(rg);
+            }
           }
-        }
-      });
-      batchSelected.clear();
-      cleanEmptyGroups();
-      invalidateDateSet();
-      persist();
+        });
+        addTombstones('task', ids);
+        batchSelected.clear();
+        cleanEmptyGroups();
+        invalidateDateSet();
+        persist();
       toast('已删除 ' + removedItems.length + ' 条记录', 'warn', function(){
         removedItems.forEach(function(t){ tasks.push(t); });
         removedGroups.forEach(function(g){
@@ -2707,6 +2715,9 @@ renderMain();
     // [FIX] 同步更新主应用内存中的 tasks/groups，避免下次 getLocalData 读到旧数据导致云端覆盖
     if(data.tasks) cb.tasks = data.tasks;
     if(data.groups) cb.groups = data.groups;
+    // 强制触发主应用重新渲染
+    cb.invalidateDateSet();
+    cb.renderMain();
   }
 
   // ─── 合并策略：以 id 为主键 + 墓碑过滤 ───
@@ -2749,7 +2760,14 @@ renderMain();
     var groupMap = {};
     (local.groups || []).forEach(function(g){ groupMap[g.id] = g; });
     (remote.groups || []).forEach(function(g){
-      if(!groupMap[g.id]) groupMap[g.id] = g;
+      var existing = groupMap[g.id];
+      if(!existing){
+        groupMap[g.id] = g;
+      } else {
+        var localTime = existing.updatedAt || existing.createdAt || '';
+        var remoteTime = g.updatedAt || g.createdAt || '';
+        if(remoteTime > localTime) groupMap[g.id] = g;
+      }
     });
     merged.groups = Object.values(groupMap).filter(function(g){
       return !merged.tombstones['group:' + g.id];
@@ -2808,7 +2826,7 @@ renderMain();
     }
   }
 
-  // ─── 推送本地数据到云端 ───
+  // ─── 核心同步逻辑：拉取 -> 合并 -> 推送 ───
   async function doSync(){
     if(syncing) return;
     if(!gistId){
@@ -2822,11 +2840,25 @@ renderMain();
     if(syncBtn) syncBtn.style.opacity = '0.5';
 
     try {
+      // 1. 先拉取云端数据
+      var remoteData = await pullFromCloud();
+      var localData = getLocalData();
+      var finalData = localData;
+
+      if(remoteData){
+        // 2. 合并数据
+        finalData = mergeData(remoteData, localData);
+        // 3. 更新本地存储和内存
+        setLocalData(finalData);
+      }
+
+      // 4. 推送合并后的最终数据到云端
       var resp = await fetch(API + '/gist-write', {
         method: 'POST',
         headers: { 'X-Gist-ID': gistId, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: getLocalData() })
+        body: JSON.stringify({ data: finalData })
       });
+
       if(resp.ok){
         nextRetryTime = 0;
       } else if(resp.status === 403 || resp.status === 429){
@@ -2851,8 +2883,6 @@ renderMain();
       var remoteData = await pullFromCloud();
       if(remoteData){
         setLocalData(remoteData);
-        cb.invalidateDateSet();
-        cb.renderMain();
         cb.toast('☁️ 已从云端加载', 'ok');
       } else {
         cb.toast('云端暂无数据', 'info');
@@ -2927,8 +2957,6 @@ renderMain();
         var remoteData = await pullFromCloud();
         if(remoteData){
           setLocalData(remoteData);
-          cb.invalidateDateSet();
-          cb.renderMain();
           cb.toast('☁️ 已绑定并加载云端数据！', 'ok');
         } else {
           cb.toast('✅ 已绑定云端，但云端暂无数据', 'ok');
@@ -3006,10 +3034,11 @@ renderMain();
     if(document.hidden && gistId && !syncing) syncBeacon();
   });
 
-  // ─── 页面启动时：有云端则推送 ───
+  // ─── 页面启动时：有云端则同步 ───
   async function init(){
     injectButtons();
     if(gistId){
+      // 启动时执行一次完整的同步（拉取+合并+推送）
       doSync();
       startAutoSync();
     }
