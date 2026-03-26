@@ -716,12 +716,15 @@ function persist(){
     save('tasks', tasks);
     save('groups', groups);
     checkStorageCapacity();
+    // 通知云端同步模块：用户数据已变更
+    if(root._cb && root._cb.onDataChanged) root._cb.onDataChanged();
   }, 300);
 }
 function persistNow(){
   if(_persistTimer){ clearTimeout(_persistTimer); _persistTimer = null; }
   save('tasks', tasks);
   save('groups', groups);
+  if(root._cb && root._cb.onDataChanged) root._cb.onDataChanged();
 }
 
 // [P4 FIX] calcStreak using date-indexed set for O(N) total
@@ -1807,7 +1810,17 @@ function renderToday(el){
     // Today's reminders (highest priority - shown right after header)
     + (function(){
       var todayReminds = tasks.filter(function(t){ return t.remindDate === today; }).sort(function(a,b){ return (b.createdAt || '').localeCompare(a.createdAt || ''); });
-      var overdueReminds = tasks.filter(function(t){ return t.remindDate && t.remindDate < today; }).sort(function(a,b){ return t.remindDate.localeCompare(b.remindDate); });
+      var overdueReminds = tasks.filter(function(t){ return t.remindDate && t.remindDate < today; }).sort(function(a,b){ return a.remindDate.localeCompare(b.remindDate); });
+      // 过期超过 7 天的自动清除提醒
+      var expired = tasks.filter(function(t){ return t.remindDate && diffDays(t.remindDate, today) > 7; });
+      if(expired.length){
+        var expiredIds = {};
+        expired.forEach(function(t){ expiredIds[t.id] = true; });
+        tasks.forEach(function(t){ if(expiredIds[t.id]) t.remindDate = null; });
+        persistNow();
+        toast('已自动清除 ' + expired.length + ' 个过期超过 7 天的提醒', 'info');
+      }
+      overdueReminds = overdueReminds.filter(function(t){ return diffDays(t.remindDate, today) <= 7; });
       if(!todayReminds.length && !overdueReminds.length) return '';
       var html = '<div class="today-remind">';
       if(todayReminds.length){
@@ -1852,10 +1865,27 @@ function renderToday(el){
     // Insights
     + insights.map(function(ins){ return '<div class="today-insight"><span class="ti-icon">💡</span><span>' + ins + '</span></div>'; }).join('')
 
-    // Stale warnings
-    + (staleGroups.length ? '<div class="today-stale"><b>⏳ 已超过 7 天未记录：</b>'
-      + staleGroups.map(function(sg){ return '<div class="today-stale-item">' + sg.icon + ' ' + esc(sg.name) + '（' + sg.days + ' 天前）</div>'; }).join('')
-      + '</div>' : '')
+    // Stale warnings (超过 30 天的折叠，只显示数量)
+    + (function(){
+      if(!staleGroups.length) return '';
+      var recent = staleGroups.filter(function(sg){ return sg.days <= 30; });
+      var ancient = staleGroups.filter(function(sg){ return sg.days > 30; });
+      var html = '<div class="today-stale"><b>⏳ 长时间未记录的分组：</b>';
+      recent.forEach(function(sg){
+        html += '<div class="today-stale-item">' + sg.icon + ' ' + esc(sg.name) + '（' + sg.days + ' 天前）</div>';
+      });
+      if(ancient.length){
+        html += '<div class="today-stale-item" style="cursor:pointer;color:var(--text-muted)" id="stale-toggle">还有 <b>' + ancient.length + ' 个</b> 超过 30 天的分组 ▾</div>';
+        html += '<div id="stale-ancient" style="display:none">';
+        ancient.forEach(function(sg){
+          html += '<div class="today-stale-item">' + sg.icon + ' ' + esc(sg.name) + '（' + sg.days + ' 天前）</div>';
+        });
+        html += '</div>';
+      }
+      html += '<div style="margin-top:8px"><button class="btn" style="font-size:.72rem;padding:4px 10px" id="stale-cleanup-btn">🧹 清理不活跃的分组</button></div>';
+      html += '</div>';
+      return html;
+    })()
 
     // Today's records
     + '<div class="today-section"><h3>今天的记录 <span class="ts-badge">' + todayTasks.length + '</span></h3>'
@@ -1895,6 +1925,56 @@ function renderToday(el){
     });
   });
   bindNoteInteractions(el);
+
+  // Bind stale group toggle & cleanup
+  var staleToggle = document.getElementById('stale-toggle');
+  if(staleToggle){
+    staleToggle.addEventListener('click', function(){
+      var anc = document.getElementById('stale-ancient');
+      if(anc){ var vis = anc.style.display !== 'none'; anc.style.display = vis ? 'none' : 'block'; staleToggle.innerHTML = staleToggle.innerHTML.replace(/[▾▸]/, vis ? '▸' : '▾'); }
+    });
+  }
+  var staleCleanupBtn = document.getElementById('stale-cleanup-btn');
+  if(staleCleanupBtn){
+    staleCleanupBtn.addEventListener('click', function(){
+      var inactive = groups.filter(function(g){
+        var gt = tasks.filter(function(t){ return t.groupId === g.id; });
+        return gt.length >= 2 && diffDays(gt.sort(function(a,b){ return b.date.localeCompare(a.date); })[0].date, todayStr()) >= 7;
+      });
+      if(!inactive.length) return;
+      var names = inactive.map(function(g){ return g.name; }).join('、');
+      confirmCallback = null;
+      cBody.innerHTML = '将删除 <b>' + inactive.length + ' 个</b>不活跃分组及其所有记录：<br><b>' + esc(names) + '</b><br><br>分组内的记录也会一并删除。<span style="color:var(--text-muted)"><br>删除后可通过撤销恢复。</span>';
+      cOk.textContent = '确认删除';
+      cOk.disabled = false;
+      confirmNeedsTyping = false;
+      cInputWrap.style.display = 'none';
+      confirmBg.classList.add('open');
+      confirmCallback = function(){
+        var removedGroups = [];
+        var removedTasks = [];
+        inactive.forEach(function(g){
+          var gTasks = tasks.filter(function(t){ return t.groupId === g.id; });
+          removedGroups.push(g);
+          removedTasks = removedTasks.concat(gTasks);
+        });
+        var removedGroupIds = new Set(inactive.map(function(g){ return g.id; }));
+        tasks = tasks.filter(function(t){ return !removedGroupIds.has(t.groupId); });
+        groups = groups.filter(function(g){ return !removedGroupIds.has(g.id); });
+        invalidateDateSet();
+        persist();
+        toast('已清理 ' + inactive.length + ' 个分组（' + removedTasks.length + ' 条记录）', 'warn', function(){
+          removedGroups.forEach(function(g){ groups.push(g); });
+          removedTasks.forEach(function(t){ tasks.push(t); });
+          invalidateDateSet();
+          persist();
+          renderMain();
+          toast('已恢复 ' + removedGroups.length + ' 个分组', 'ok');
+        });
+        renderMain();
+      };
+    });
+  }
 }
 
 // ========== CALENDAR ==========
@@ -2474,7 +2554,8 @@ root._cb = {
   get tasks(){ return tasks; },
   set tasks(v){ tasks = v; },
   get groups(){ return groups; },
-  set groups(v){ groups = v; }
+  set groups(v){ groups = v; },
+  onDataChanged: null // 由云端同步模块赋值
 };
 
 // ========== INIT ==========
@@ -2580,10 +2661,8 @@ renderMain();
 
   // ─── 将云端数据写入 localStorage + 同步内存状态 ───
   function setLocalData(data){
-    _skipSyncTrigger = true;
     if(data.tasks) localStorage.setItem(cb.STORAGE_PREFIX + 'tasks', JSON.stringify(data.tasks));
     if(data.groups) localStorage.setItem(cb.STORAGE_PREFIX + 'groups', JSON.stringify(data.groups));
-    _skipSyncTrigger = false;
     // [FIX] 同步更新主应用内存中的 tasks/groups，避免下次 getLocalData 读到旧数据导致云端覆盖
     if(data.tasks) cb.tasks = data.tasks;
     if(data.groups) cb.groups = data.groups;
@@ -2846,18 +2925,13 @@ renderMain();
   }
 
   // ─── 拦截 localStorage.setItem，检测变化后触发同步 ───
-  var _nativeSetItem = Storage.prototype.setItem;
+  // ─── 用户数据变更时触发同步（由主应用 persist() 调用）──
   var _syncDebounce = null;
-  var _skipSyncTrigger = false; // setLocalData 写入时跳过同步调度
-  Storage.prototype.setItem = function(key, value){
-    _nativeSetItem.call(this, key, value);
-    if(!_skipSyncTrigger && (key === cb.STORAGE_PREFIX + 'tasks' || key === cb.STORAGE_PREFIX + 'groups')){
-      // 数据变化，延迟触发云端同步
-      if(_syncDebounce) clearTimeout(_syncDebounce);
-      _syncDebounce = setTimeout(function(){
-        if(gistId && !syncing && Date.now() >= nextRetryTime) doSync();
-      }, 3000); // 3 秒防抖
-    }
+  cb.onDataChanged = function(){
+    if(_syncDebounce) clearTimeout(_syncDebounce);
+    _syncDebounce = setTimeout(function(){
+      if(gistId && !syncing && Date.now() >= nextRetryTime) doSync();
+    }, 3000);
   };
 
   // ─── 页面关闭/切后台时立即同步到云端 ───
