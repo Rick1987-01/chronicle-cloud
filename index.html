@@ -2505,6 +2505,7 @@ renderMain();
   var gistId = localStorage.getItem(cb.STORAGE_PREFIX + 'cloud_gist_id');
   var syncing = false;
   var autoSyncTimer = null;
+  var nextRetryTime = 0; // 速率限制退避时间戳
 
   // ─── 在右上角插入同步按钮 ───
   function injectButtons(){
@@ -2666,6 +2667,12 @@ renderMain();
       cb.toast('未绑定云端，点击 🔗 按钮绑定', 'warn');
       return;
     }
+    // 速率限制退避检查
+    if(Date.now() < nextRetryTime){
+      var waitSec = Math.ceil((nextRetryTime - Date.now()) / 1000);
+      cb.toast('⏳ 同步暂停中，' + waitSec + '秒后自动重试', 'info');
+      return;
+    }
 
     syncing = true;
     var syncBtn = document.getElementById('cloud-sync-btn');
@@ -2685,13 +2692,24 @@ renderMain();
 
       // 4. 推送（包含合并后的最新数据）
       var pushData = getLocalData();
-      var ok = await pushToCloud(pushData);
+      var pushResp = await fetch(API + '/gist-write', {
+        method: 'POST',
+        headers: {
+          'X-Gist-ID': gistId,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ data: pushData })
+      });
 
-      if(ok){
+      if(pushResp.ok){
         cb.toast('☁️ 已同步到云端', 'ok');
-        // 刷新 UI
+        nextRetryTime = 0; // 成功后重置退避
         cb.invalidateDateSet();
         cb.renderMain();
+      } else if(pushResp.status === 403 || pushResp.status === 429){
+        // 速率限制：退避 5 分钟
+        nextRetryTime = Date.now() + 5 * 60 * 1000;
+        cb.toast('⏳ GitHub 速率限制，5分钟后自动重试', 'warn');
       } else {
         cb.toast('同步失败，请检查网络', 'warn');
       }
@@ -2813,8 +2831,8 @@ renderMain();
   function startAutoSync(){
     if(autoSyncTimer) clearInterval(autoSyncTimer);
     autoSyncTimer = setInterval(function(){
-      if(gistId && !syncing) doSync();
-    }, 60000);
+      if(gistId && !syncing && Date.now() >= nextRetryTime) doSync();
+    }, 120000); // 2 分钟
   }
 
   // ─── 拦截 localStorage.setItem，检测变化后触发同步 ───
@@ -2826,8 +2844,8 @@ renderMain();
       // 数据变化，延迟触发云端同步
       if(_syncDebounce) clearTimeout(_syncDebounce);
       _syncDebounce = setTimeout(function(){
-        if(gistId && !syncing) doSync();
-      }, 5000); // 5 秒防抖
+        if(gistId && !syncing && Date.now() >= nextRetryTime) doSync();
+      }, 10000); // 10 秒防抖
     }
   };
 
