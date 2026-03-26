@@ -2692,7 +2692,11 @@ renderMain();
       tasks = [];
       groups = [];
     }
-    return { tasks: tasks, groups: groups, tombstones: loadTombstones(), version: 2, syncedAt: new Date().toISOString() };
+    var tombstones;
+    try {
+      tombstones = JSON.parse(localStorage.getItem(cb.STORAGE_PREFIX + 'tombstones')) || {};
+    } catch(e){ tombstones = {}; }
+    return { tasks: tasks, groups: groups, tombstones: tombstones, version: 2, syncedAt: new Date().toISOString() };
   }
 
   // ─── 将云端数据写入 localStorage + 同步内存状态 ───
