@@ -2808,65 +2808,56 @@ renderMain();
     }
   }
 
-  // ─── 完整同步流程：拉取 → 合并 → 推送 ───
+  // ─── 推送本地数据到云端 ───
   async function doSync(){
     if(syncing) return;
     if(!gistId){
       cb.toast('未绑定云端，点击 🔗 按钮绑定', 'warn');
       return;
     }
-    // 速率限制退避检查
-    if(Date.now() < nextRetryTime){
-      var waitSec = Math.ceil((nextRetryTime - Date.now()) / 1000);
-      cb.toast('⏳ 同步暂停中，' + waitSec + '秒后自动重试', 'info');
-      return;
-    }
+    if(Date.now() < nextRetryTime) return;
 
     syncing = true;
     var syncBtn = document.getElementById('cloud-sync-btn');
     if(syncBtn) syncBtn.style.opacity = '0.5';
 
     try {
-      // 1. 拉取远程
-      var remoteData = await pullFromCloud();
-      var localData = getLocalData();
-
-      if(remoteData){
-        // 2. 合并
-        var merged = mergeData(remoteData, localData);
-        // 3. 写回本地
-        setLocalData(merged);
-      }
-
-      // 4. 推送（包含合并后的最新数据）
-      var pushData = getLocalData();
-      var pushResp = await fetch(API + '/gist-write', {
+      var resp = await fetch(API + '/gist-write', {
         method: 'POST',
-        headers: {
-          'X-Gist-ID': gistId,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ data: pushData })
+        headers: { 'X-Gist-ID': gistId, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: getLocalData() })
       });
-
-      if(pushResp.ok){
-        cb.toast('☁️ 已同步到云端', 'ok');
-        nextRetryTime = 0; // 成功后重置退避
-        cb.invalidateDateSet();
-        cb.renderMain();
-      } else if(pushResp.status === 403 || pushResp.status === 429){
-        // 速率限制：退避 5 分钟
+      if(resp.ok){
+        nextRetryTime = 0;
+      } else if(resp.status === 403 || resp.status === 429){
         nextRetryTime = Date.now() + 5 * 60 * 1000;
-        cb.toast('⏳ GitHub 速率限制，5分钟后自动重试', 'warn');
+        cb.toast('⏳ 速率限制，5分钟后重试', 'warn');
       } else {
-        cb.toast('同步失败，请检查网络', 'warn');
+        cb.toast('同步失败: ' + resp.status, 'warn');
       }
     } catch(e){
       cb.toast('同步异常: ' + e.message, 'warn');
     }
-
     syncing = false;
     if(syncBtn) syncBtn.style.opacity = '1';
+  }
+
+  // ─── 手动从云端拉取（覆盖本地）──
+  async function doPull(){
+    if(!gistId){ cb.toast('未绑定云端', 'warn'); return; }
+    if(!confirm('从云端加载会覆盖本地数据，确定？')) return;
+    try {
+      cb.toast('正在加载...', 'info');
+      var remoteData = await pullFromCloud();
+      if(remoteData){
+        setLocalData(remoteData);
+        cb.invalidateDateSet();
+        cb.renderMain();
+        cb.toast('☁️ 已从云端加载', 'ok');
+      } else {
+        cb.toast('云端暂无数据', 'info');
+      }
+    } catch(e){ cb.toast('加载失败: ' + e.message, 'warn'); }
   }
 
   // ─── 绑定/初始化云端 ───
@@ -2876,22 +2867,25 @@ renderMain();
       var choice = prompt(
         '✅ 已绑定云端\n\nGist ID: ' + gistId + '\n\n' +
         '输入以下数字执行操作：\n' +
-        '1 = 同步到云端\n' +
-        '2 = 复制 Gist ID（用于其他设备）\n' +
-        '3 = 解除绑定\n' +
+        '1 = 推送到云端\n' +
+        '2 = 从云端加载（覆盖本地）\n' +
+        '3 = 复制 Gist ID\n' +
+        '4 = 解除绑定\n' +
         '取消 = 关闭',
         '1'
       );
       if(choice === '1'){
         doSync();
       } else if(choice === '2'){
+        doPull();
+      } else if(choice === '3'){
         try {
           await navigator.clipboard.writeText(gistId);
           cb.toast('📋 Gist ID 已复制到剪贴板', 'ok');
         } catch(e){
           prompt('请手动复制以下 Gist ID：', gistId);
         }
-      } else if(choice === '3'){
+      } else if(choice === '4'){
         if(confirm('确定要解除云端绑定？\n（本地数据不会删除，只是断开云端连接）')){
           localStorage.removeItem(cb.STORAGE_PREFIX + 'cloud_gist_id');
           gistId = null;
@@ -3012,21 +3006,11 @@ renderMain();
     if(document.hidden && gistId && !syncing) syncBeacon();
   });
 
-  // ─── 页面启动时：有云端则先拉取 ───
+  // ─── 页面启动时：有云端则推送 ───
   async function init(){
     injectButtons();
-
     if(gistId){
-      cb.toast('正在从云端加载...', 'info');
-      var remoteData = await pullFromCloud();
-      if(remoteData){
-        var localData = getLocalData();
-        var merged = mergeData(remoteData, localData);
-        setLocalData(merged);
-        cb.invalidateDateSet();
-        cb.renderMain();
-        cb.toast('☁️ 云端数据已加载', 'ok');
-      }
+      doSync();
       startAutoSync();
     }
   }
