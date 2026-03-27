@@ -135,7 +135,7 @@ textarea.fi{resize:vertical;min-height:50px}
 .te:last-child{border-bottom:none}
 .te:hover{background:var(--accent-glow);margin:0 -14px;padding:7px 14px;border-radius:5px}
 .te .tt{font-size:.65rem;color:var(--text-muted);min-width:40px}
-.te .tn{flex:1;font-size:.82rem;color:var(--text)}
+.te .tn{flex:1;font-size:.82rem;color:var(--text);overflow-wrap:anywhere;word-break:break-word}
 .te .tc{font-size:.68rem;padding:2px 6px;border-radius:12px;border:1px solid;color:var(--text-sec);white-space:nowrap}
 .te .tactions{margin-left:auto;display:flex;gap:3px;opacity:0;transition:opacity .15s}
 .te:hover .tactions{opacity:1}
@@ -176,7 +176,7 @@ textarea.fi{resize:vertical;min-height:50px}
 .tl-item .tl-date{font-size:.75rem;color:var(--text-muted);min-width:72px}
 .tl-item .tl-ago{font-size:.68rem;color:var(--text-muted)}
 .tl-item .tl-cat{font-size:.65rem;padding:2px 6px;border-radius:10px;border:1px solid;color:var(--text-sec);white-space:nowrap}
-.tl-item .tl-name{flex:1;font-size:.82rem}
+.tl-item .tl-name{flex:1;font-size:.82rem;overflow-wrap:anywhere;word-break:break-word}
 .tl-item .tl-actions{display:flex;gap:3px;opacity:0;transition:opacity .15s}
 .tl-item:hover .tl-actions{opacity:1}
 .tl-item .tl-act{cursor:pointer;color:var(--text-muted);font-size:.78rem;background:none;border:none;padding:2px 5px;border-radius:4px;transition:all .1s}
@@ -268,6 +268,9 @@ textarea.fi{resize:vertical;min-height:50px}
   .tv-controls{flex-wrap:wrap}.cal-grid{max-width:100%}
   .fab{width:56px;height:56px}
   .btn,.icon-btn,.tab,.cat-item,.tl-act,.tact{min-height:36px}
+  /* 手机端没有 hover，操作按钮始终可见 */
+  .te .tactions{opacity:1}
+  .tl-item .tl-actions{opacity:1}
 }
 @media(max-width:480px){
   .fab{width:44px;height:44px;font-size:1.2rem;bottom:12px;right:12px}
@@ -310,7 +313,7 @@ button:focus:not(:focus-visible){outline:none}
 .today-remind-item:hover{border-color:var(--accent);background:var(--accent-glow)}
 .today-remind-item:last-child{margin-bottom:0}
 .today-remind-item .tr-cat{font-size:.68rem;padding:2px 8px;border-radius:10px;border:1px solid;white-space:nowrap}
-.today-remind-item .tr-name{flex:1;font-size:.82rem;color:var(--text)}
+.today-remind-item .tr-name{flex:1;font-size:.82rem;color:var(--text);overflow-wrap:anywhere;word-break:break-word}
 .today-remind-item .tr-note{font-size:.68rem;color:var(--text-muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .today-remind-overdue{display:flex;align-items:center;gap:6px;padding:3px 0;color:var(--red);font-size:.78rem}
 .today-remind-legend{font-size:.72rem;color:var(--text-muted);margin-bottom:8px}
@@ -1759,6 +1762,11 @@ function renderMain(){
     _firstRender = false; // 首次渲染完成后关闭动画
     // 重新注入云端同步按钮（renderMain 会覆盖 innerHTML 导致动态按钮丢失）
     if(root._cb && root._cb.reinjectCloudUI) root._cb.reinjectCloudUI();
+    // [FIX] 重置手机端侧边栏遮罩，防止 re-render 后遮罩残留挡住页面
+    var _overlay = document.getElementById('side-overlay');
+    if(_overlay) _overlay.classList.remove('show');
+    var _side = document.querySelector('.side');
+    if(_side) _side.classList.remove('side-open');
   } catch(err) {
     // [Q5 FIX] Error boundary — show friendly message instead of white screen
     console.error('Render error:', err);
@@ -2688,7 +2696,13 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
 (function(){
   'use strict';
 
-  var API = window.location.origin + '/api';
+  // 兼容本地文件打开（file://）和服务器部署
+  var _origin = window.location.origin;
+  if(!_origin || _origin === 'null' || _origin === 'file://'){
+    // 本地文件模式：读取用户之前保存的服务器地址
+    _origin = localStorage.getItem(cb.STORAGE_PREFIX + 'api_origin') || '';
+  }
+  var API = _origin + '/api';
   var cb = window._cb;
   var gistId = localStorage.getItem(cb.STORAGE_PREFIX + 'cloud_gist_id');
   var syncing = false;
@@ -3028,6 +3042,26 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
 
   // ─── 绑定/初始化云端 ───
   async function doSetup(){
+    // 本地文件模式：先配置服务器地址
+    if(!_origin || _origin === 'null' || _origin === 'file://' || _origin === ''){
+      var savedOrigin = localStorage.getItem(cb.STORAGE_PREFIX + 'api_origin') || '';
+      var serverUrl = prompt(
+        '🌐 配置服务器地址\n\n' +
+        '当前为本地文件模式，需先输入服务器地址才能同步：\n\n' +
+        '（例如：https://your-server.com）',
+        savedOrigin || 'https://'
+      );
+      if(!serverUrl || serverUrl.trim() === '' || serverUrl === 'https://'){
+        cb.toast('未设置服务器地址', 'info');
+        return;
+      }
+      serverUrl = serverUrl.trim().replace(/\/+$/, ''); // 去掉末尾斜杠
+      localStorage.setItem(cb.STORAGE_PREFIX + 'api_origin', serverUrl);
+      _origin = serverUrl;
+      API = _origin + '/api';
+      cb.toast('✅ 服务器地址已设置', 'ok');
+    }
+
     if(gistId){
       // 已绑定，显示信息和操作选项
       var choice = prompt(
@@ -3273,7 +3307,7 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
   function buildPanel(){
     _panel = document.createElement('div');
     _panel.id = 'debug-panel';
-    _panel.style.cssText = 'position:fixed;bottom:80px;left:8px;right:8px;z-index:9999;background:rgba(20,20,20,0.96);border:1px solid #444;border-radius:10px;max-height:50vh;display:none;backdrop-filter:blur(8px);';
+    _panel.style.cssText = 'position:fixed;bottom:60px;left:50%;transform:translateX(-50%);width:min(92vw,520px);z-index:9999;background:rgba(20,20,20,0.96);border:1px solid #444;border-radius:10px;max-height:50vh;display:none;backdrop-filter:blur(8px);';
     var hdr = document.createElement('div');
     hdr.style.cssText = 'display:flex;align-items:center;padding:8px 12px;border-bottom:1px solid #333;';
     hdr.innerHTML = '<span style="color:#ffd43b;font-size:13px;font-weight:bold">🐛 同步调试日志</span>';
@@ -3327,14 +3361,16 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
     _list.scrollTop = _list.scrollHeight;
   }
 
-  // 注入按钮
+  // 注入按钮 — 右侧薄条 tab，不挡任何区域
   function injectBtn(){
     if(document.getElementById('debug-toggle-btn')) return;
     var btn = document.createElement('button');
     btn.id = 'debug-toggle-btn';
     btn.textContent = '🐛';
     btn.title = '调试日志';
-    btn.style.cssText = 'position:fixed;bottom:84px;right:24px;z-index:9998;width:36px;height:36px;border-radius:50%;border:1px solid #555;background:rgba(40,40,40,0.9);color:#ffd43b;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;';
+    btn.style.cssText = 'position:fixed;top:50%;right:0;z-index:9998;transform:translateY(-50%);width:22px;height:56px;border-radius:8px 0 0 8px;border:1px solid #555;border-right:none;background:rgba(40,40,40,0.88);color:#ffd43b;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:width .15s,background .15s;';
+    btn.onmouseenter = function(){ btn.style.width='30px'; btn.style.background='rgba(50,50,50,0.96)'; };
+    btn.onmouseleave = function(){ btn.style.width='22px'; btn.style.background='rgba(40,40,40,0.88)'; };
     btn.onclick = togglePanel;
     document.body.appendChild(btn);
   }
@@ -3385,7 +3421,8 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
     try {
       var t0 = Date.now();
       log('TEST', '正在请求 /api/gist-read ...');
-      var resp = await _origFetch(window.location.origin + '/api/gist-read', {
+      var _api = (localStorage.getItem('chr_api_origin') || window.location.origin || '').replace(/\/+$/,'');
+      var resp = await _origFetch(_api + '/api/gist-read', {
         headers: { 'X-Gist-ID': gid }
       });
       var ms = Date.now() - t0;
