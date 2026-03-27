@@ -3223,9 +3223,27 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
     var hdr = document.createElement('div');
     hdr.style.cssText = 'display:flex;align-items:center;padding:8px 12px;border-bottom:1px solid #333;';
     hdr.innerHTML = '<span style="color:#ffd43b;font-size:13px;font-weight:bold">🐛 同步调试日志</span>';
+    var copyBtn = document.createElement('button');
+    copyBtn.textContent = '📋复制';
+    copyBtn.style.cssText = 'margin-left:auto;background:#2d6a4f;border:none;color:#fff;padding:3px 10px;border-radius:4px;font-size:11px;cursor:pointer;';
+    copyBtn.onclick = function(){
+      var text = _dbg.map(function(e){ return '['+e.time+'] ['+e.tag+'] '+e.msg; }).join('\n');
+      navigator.clipboard.writeText(text).then(function(){
+        copyBtn.textContent = '✓已复制';
+        setTimeout(function(){ copyBtn.textContent = '📋复制'; }, 1500);
+      }).catch(function(){
+        // fallback: 创建临时 textarea
+        var ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); copyBtn.textContent = '✓已复制'; } catch(e){}
+        document.body.removeChild(ta);
+        setTimeout(function(){ copyBtn.textContent = '📋复制'; }, 1500);
+      });
+    };
     var clearBtn = document.createElement('button');
     clearBtn.textContent = '清空';
-    clearBtn.style.cssText = 'margin-left:auto;background:#333;border:none;color:#aaa;padding:3px 10px;border-radius:4px;font-size:11px;cursor:pointer;';
+    clearBtn.style.cssText = 'margin-left:6px;background:#333;border:none;color:#aaa;padding:3px 10px;border-radius:4px;font-size:11px;cursor:pointer;';
     clearBtn.onclick = function(){ _list.innerHTML=''; _dbg=[]; };
     var testBtn = document.createElement('button');
     testBtn.textContent = '测试API';
@@ -3235,6 +3253,7 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
     closeBtn.textContent = '✕';
     closeBtn.style.cssText = 'margin-left:6px;background:none;border:none;color:#888;font-size:14px;cursor:pointer;padding:2px 6px;';
     closeBtn.onclick = function(){ _panel.style.display='none'; };
+    hdr.appendChild(copyBtn);
     hdr.appendChild(clearBtn);
     hdr.appendChild(testBtn);
     hdr.appendChild(closeBtn);
