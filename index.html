@@ -3184,5 +3184,165 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
 
 })();
 </script>
+
+<!-- ==================== 调试面板 ==================== -->
+<script>
+(function(){
+  'use strict';
+  var _dbg = [];
+  var _panel = null;
+  var _list = null;
+
+  function ts(){ var d=new Date(); return d.toTimeString().slice(0,8)+'.'+String(d.getMilliseconds()).padStart(3,'0'); }
+
+  function log(tag, msg, type){
+    var entry = { time: ts(), tag: tag, msg: msg, type: type||'info' };
+    _dbg.push(entry);
+    if(_dbg.length > 200) _dbg.shift();
+    if(_list){
+      var el = document.createElement('div');
+      el.style.cssText = 'padding:3px 6px;border-bottom:1px solid rgba(255,255,255,0.08);font-size:11px;line-height:1.4;color:' +
+        (type==='err'?'#ff6b6b':type==='ok'?'#51cf66':type==='warn'?'#ffd43b':'#adb5bd');
+      el.textContent = '[' + ts() + '] [' + tag + '] ' + msg;
+      _list.appendChild(el);
+      _list.scrollTop = _list.scrollHeight;
+    }
+    if(type==='err') console.error('[DBG]', tag, msg);
+    else console.log('[DBG]', tag, msg);
+  }
+
+  function togglePanel(){
+    if(!_panel) buildPanel();
+    _panel.style.display = _panel.style.display==='none'?'block':'none';
+  }
+
+  function buildPanel(){
+    _panel = document.createElement('div');
+    _panel.id = 'debug-panel';
+    _panel.style.cssText = 'position:fixed;bottom:80px;left:8px;right:8px;z-index:9999;background:rgba(20,20,20,0.96);border:1px solid #444;border-radius:10px;max-height:50vh;display:none;backdrop-filter:blur(8px);';
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;align-items:center;padding:8px 12px;border-bottom:1px solid #333;';
+    hdr.innerHTML = '<span style="color:#ffd43b;font-size:13px;font-weight:bold">🐛 同步调试日志</span>';
+    var clearBtn = document.createElement('button');
+    clearBtn.textContent = '清空';
+    clearBtn.style.cssText = 'margin-left:auto;background:#333;border:none;color:#aaa;padding:3px 10px;border-radius:4px;font-size:11px;cursor:pointer;';
+    clearBtn.onclick = function(){ _list.innerHTML=''; _dbg=[]; };
+    var testBtn = document.createElement('button');
+    testBtn.textContent = '测试API';
+    testBtn.style.cssText = 'margin-left:6px;background:#1a73e8;border:none;color:#fff;padding:3px 10px;border-radius:4px;font-size:11px;cursor:pointer;';
+    testBtn.onclick = function(){ window._dbgTestAPI(); };
+    var closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕';
+    closeBtn.style.cssText = 'margin-left:6px;background:none;border:none;color:#888;font-size:14px;cursor:pointer;padding:2px 6px;';
+    closeBtn.onclick = function(){ _panel.style.display='none'; };
+    hdr.appendChild(clearBtn);
+    hdr.appendChild(testBtn);
+    hdr.appendChild(closeBtn);
+    _list = document.createElement('div');
+    _list.style.cssText = 'max-height:40vh;overflow-y:auto;padding:4px 0;font-family:monospace;';
+    _panel.appendChild(hdr);
+    _panel.appendChild(_list);
+    document.body.appendChild(_panel);
+    // replay existing logs
+    _dbg.forEach(function(e){
+      var el = document.createElement('div');
+      el.style.cssText = 'padding:3px 6px;border-bottom:1px solid rgba(255,255,255,0.08);font-size:11px;line-height:1.4;color:' +
+        (e.type==='err'?'#ff6b6b':e.type==='ok'?'#51cf66':e.type==='warn'?'#ffd43b':'#adb5bd');
+      el.textContent = '[' + e.time + '] [' + e.tag + '] ' + e.msg;
+      _list.appendChild(el);
+    });
+    _list.scrollTop = _list.scrollHeight;
+  }
+
+  // 注入按钮
+  function injectBtn(){
+    if(document.getElementById('debug-toggle-btn')) return;
+    var btn = document.createElement('button');
+    btn.id = 'debug-toggle-btn';
+    btn.textContent = '🐛';
+    btn.title = '调试日志';
+    btn.style.cssText = 'position:fixed;bottom:84px;right:24px;z-index:9998;width:36px;height:36px;border-radius:50%;border:1px solid #555;background:rgba(40,40,40,0.9);color:#ffd43b;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;';
+    btn.onclick = togglePanel;
+    document.body.appendChild(btn);
+  }
+
+  // Hook fetch
+  var _origFetch = window.fetch;
+  window.fetch = function(){
+    var url = (arguments[0] && typeof arguments[0]==='string') ? arguments[0] : (arguments[0] && arguments[0].url) || '?';
+    var method = (arguments[1] && arguments[1].method) || 'GET';
+    var shortUrl = url.replace(window.location.origin, '');
+    var t0 = Date.now();
+    log('FETCH', method + ' ' + shortUrl);
+    return _origFetch.apply(this, arguments).then(function(resp){
+      var ms = Date.now() - t0;
+      // clone to read body without consuming
+      var clone = resp.clone();
+      clone.text().then(function(body){
+        var preview = body.slice(0, 300);
+        log('FETCH', resp.status + ' ' + shortUrl + ' (' + ms + 'ms, ' + body.length + 'B)',
+          resp.ok ? 'ok' : 'err');
+        if(!resp.ok || body.indexOf('"error"') >= 0){
+          log('FETCH', '← ' + preview, 'warn');
+        }
+      });
+      return resp;
+    }).catch(function(err){
+      var ms = Date.now() - t0;
+      log('FETCH', 'FAIL ' + shortUrl + ' (' + ms + 'ms): ' + err.message, 'err');
+      throw err;
+    });
+  };
+
+  // Hook localStorage.setItem
+  var _origSetItem = localStorage.setItem.bind(localStorage);
+  localStorage.setItem = function(k, v){
+    log('LS', 'setItem ' + k + ' (' + String(v).length + ' chars)');
+    return _origSetItem(k, v);
+  };
+
+  // API test function
+  window._dbgTestAPI = async function(){
+    var gid = localStorage.getItem('chr_cloud_gist_id');
+    log('TEST', '=== API 诊断开始 ===', 'warn');
+    log('TEST', 'Gist ID: ' + (gid || '未设置'), gid ? 'ok' : 'err');
+    log('TEST', 'Online: ' + navigator.onLine);
+    log('TEST', 'UA: ' + navigator.userAgent.slice(0, 80));
+    if(!gid){ log('TEST', '无 Gist ID，跳过 API 测试', 'err'); return; }
+    try {
+      var t0 = Date.now();
+      log('TEST', '正在请求 /api/gist-read ...');
+      var resp = await _origFetch(window.location.origin + '/api/gist-read', {
+        headers: { 'X-Gist-ID': gid }
+      });
+      var ms = Date.now() - t0;
+      log('TEST', 'Status: ' + resp.status + ' (' + ms + 'ms)', resp.ok ? 'ok' : 'err');
+      var text = await resp.text();
+      log('TEST', 'Response size: ' + text.length + 'B');
+      log('TEST', 'Response preview: ' + text.slice(0, 200));
+      if(resp.ok){
+        try {
+          var json = JSON.parse(text);
+          var tasks = json.data && json.data.tasks;
+          log('TEST', 'tasks 数量: ' + (tasks ? tasks.length : 'N/A'), tasks && tasks.length > 0 ? 'ok' : 'warn');
+          log('TEST', 'version: ' + (json.data && json.data.version));
+        } catch(e){
+          log('TEST', 'JSON 解析失败: ' + e.message, 'err');
+        }
+      }
+    } catch(e){
+      log('TEST', '请求异常: ' + e.name + ': ' + e.message, 'err');
+    }
+    log('TEST', '=== API 诊断结束 ===', 'warn');
+  };
+
+  // 启动
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded', function(){ injectBtn(); log('DBG','调试面板已加载','ok'); });
+  } else {
+    injectBtn(); log('DBG','调试面板已加载','ok');
+  }
+})();
+</script>
 </body>
 </html>
