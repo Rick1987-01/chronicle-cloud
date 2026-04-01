@@ -784,6 +784,18 @@ function persistNow(){
   if(root._cb && root._cb.onDataChanged) root._cb.onDataChanged();
 }
 
+// Dismissed items for today's page reminders & stale groups
+function getDismissed(key){
+  try{ return JSON.parse(localStorage.getItem(STORAGE_PREFIX + 'dismiss_' + key)) || []; }catch(e){ return []; }
+}
+function addDismissed(key, id){
+  var arr = getDismissed(key);
+  if(arr.indexOf(id) === -1){ arr.push(id); localStorage.setItem(STORAGE_PREFIX + 'dismiss_' + key, JSON.stringify(arr)); }
+}
+function clearDismissed(key){
+  localStorage.removeItem(STORAGE_PREFIX + 'dismiss_' + key);
+}
+
 // [P4 FIX] calcStreak using date-indexed set for O(N) total
 function _buildDateSet(){
   var s = {};
@@ -814,9 +826,12 @@ function calcStreak(){
 function calcWeekCompare(){
   var today = todayStr();
   var thisWeek = 0, lastWeek = 0;
-  var wsThis = fmtDate(subDays(new Date(), 6));
-  var wsLast = fmtDate(subDays(new Date(), 13));
-  var weLast = fmtDate(subDays(new Date(), 7));
+  var monday = startOfWeek(new Date()); // 本周一
+  var wsThis = fmtDate(monday);
+  var lastSunday = subDays(monday, 1); // 上周日
+  var lastMonday = subDays(monday, 7); // 上周一
+  var wsLast = fmtDate(lastMonday);
+  var weLast = fmtDate(lastSunday);
   tasks.forEach(function(t){
     if(t.date >= wsThis && t.date <= today) thisWeek++;
     if(t.date >= wsLast && t.date <= weLast) lastWeek++;
@@ -2012,7 +2027,7 @@ function renderToday(el){
     var gt = tasks.filter(function(t){ return t.groupId === g.id; }).sort(function(a,b){ return b.date.localeCompare(a.date); });
     if(gt.length >= 2){
       var daysSince = diffDays(gt[0].date, today);
-      if(daysSince >= 7) staleGroups.push({name: g.name, days: daysSince, icon: catIcon(getGroupCategory(g.id))});
+      if(daysSince >= 7) staleGroups.push({id: g.id, name: g.name, days: daysSince, icon: catIcon(getGroupCategory(g.id))});
     }
   });
   // Week comparison
@@ -2073,14 +2088,20 @@ function renderToday(el){
         });
       }
       if(overdueReminds.length){
-        html += '<div style="margin-top:' + (todayReminds.length ? '10px' : '0') + '"><h3>⚠️ 已过期提醒 <span class="ts-badge" style="background:var(--red-glow);color:var(--red)">' + overdueReminds.length + '</span></h3>';
-        overdueReminds.forEach(function(t){
-          html += '<div class="today-remind-overdue">'
-            + '<span style="color:var(--text-sec)">' + catIcon(t.category) + ' ' + esc(t.name) + '</span>'
-            + '<span style="margin-left:auto;font-size:.68rem">原定 ' + t.remindDate + '</span>'
-            + '</div>';
-        });
-        html += '</div>';
+        var dismissedOverdue = getDismissed('overdue');
+        var visOverdue = overdueReminds.filter(function(t){ return dismissedOverdue.indexOf(t.id) === -1; });
+        if(visOverdue.length){
+          html += '<div style="margin-top:' + (todayReminds.length ? '10px' : '0') + '"><h3>⚠️ 已过期提醒 <span class="ts-badge" style="background:var(--red-glow);color:var(--red)">' + visOverdue.length + '</span>'
+            + '<button class="dismiss-all-btn" data-dismiss-key="overdue" style="margin-left:auto;font-size:.6rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:2px 6px;border-radius:4px">全部忽略</button></h3>';
+          visOverdue.forEach(function(t){
+            html += '<div class="today-remind-overdue">'
+              + '<span style="color:var(--text-sec)">' + catIcon(t.category) + ' ' + esc(t.name) + '</span>'
+              + '<span style="margin-left:auto;font-size:.68rem">原定 ' + t.remindDate + '</span>'
+              + '<button class="dismiss-one-btn" data-dismiss-key="overdue" data-dismiss-id="' + t.id + '" style="margin-left:4px;background:none;border:none;color:var(--text-muted);font-size:.85rem;cursor:pointer;padding:1px 4px;border-radius:3px">✕</button>'
+              + '</div>';
+          });
+          html += '</div>';
+        }
       }
       html += '</div>';
       return html;
@@ -2107,17 +2128,25 @@ function renderToday(el){
     // Stale warnings (超过 30 天的折叠，只显示数量)
     + (function(){
       if(!staleGroups.length) return '';
-      var recent = staleGroups.filter(function(sg){ return sg.days <= 30; });
-      var ancient = staleGroups.filter(function(sg){ return sg.days > 30; });
-      var html = '<div class="today-stale"><b>⏳ 长时间未记录的分组：</b>';
+      var dismissedStale = getDismissed('stale');
+      var visStale = staleGroups.filter(function(sg){ return dismissedStale.indexOf(sg.id) === -1; });
+      if(!visStale.length) return '';
+      var recent = visStale.filter(function(sg){ return sg.days <= 30; });
+      var ancient = visStale.filter(function(sg){ return sg.days > 30; });
+      var html = '<div class="today-stale"><b>⏳ 长时间未记录的分组：</b>'
+        + '<button class="dismiss-all-btn" data-dismiss-key="stale" style="margin-left:auto;font-size:.6rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:2px 6px;border-radius:4px">全部忽略</button>';
       recent.forEach(function(sg){
-        html += '<div class="today-stale-item">' + sg.icon + ' ' + esc(sg.name) + '（' + sg.days + ' 天前）</div>';
+        html += '<div class="today-stale-item">' + sg.icon + ' ' + esc(sg.name) + '（' + sg.days + ' 天前）'
+          + '<button class="dismiss-one-btn" data-dismiss-key="stale" data-dismiss-id="' + sg.id + '" style="margin-left:4px;background:none;border:none;color:var(--text-muted);font-size:.85rem;cursor:pointer;padding:1px 4px;border-radius:3px">✕</button>'
+          + '</div>';
       });
       if(ancient.length){
         html += '<div class="today-stale-item" style="cursor:pointer;color:var(--text-muted)" id="stale-toggle">还有 <b>' + ancient.length + ' 个</b> 超过 30 天的分组 ▾</div>';
         html += '<div id="stale-ancient" style="display:none">';
         ancient.forEach(function(sg){
-          html += '<div class="today-stale-item">' + sg.icon + ' ' + esc(sg.name) + '（' + sg.days + ' 天前）</div>';
+          html += '<div class="today-stale-item">' + sg.icon + ' ' + esc(sg.name) + '（' + sg.days + ' 天前）'
+            + '<button class="dismiss-one-btn" data-dismiss-key="stale" data-dismiss-id="' + sg.id + '" style="margin-left:4px;background:none;border:none;color:var(--text-muted);font-size:.85rem;cursor:pointer;padding:1px 4px;border-radius:3px">✕</button>'
+            + '</div>';
         });
         html += '</div>';
       }
@@ -2217,6 +2246,23 @@ function renderToday(el){
       };
     });
   }
+
+  // Bind dismiss buttons for overdue reminders & stale groups
+  el.addEventListener('click', function(e){
+    var allBtn = e.target.closest('.dismiss-all-btn');
+    var oneBtn = e.target.closest('.dismiss-one-btn');
+    if(allBtn){
+      var key = allBtn.dataset.dismissKey;
+      // Mark all visible items as dismissed
+      var items = el.querySelectorAll('.dismiss-one-btn[data-dismiss-key="' + key + '"]');
+      items.forEach(function(btn){ addDismissed(key, btn.dataset.dismissId); });
+      renderMain();
+      toast('已忽略全部', 'ok');
+    } else if(oneBtn){
+      addDismissed(oneBtn.dataset.dismissKey, oneBtn.dataset.dismissId);
+      renderMain();
+    }
+  });
 }
 
 // ========== CALENDAR ==========
