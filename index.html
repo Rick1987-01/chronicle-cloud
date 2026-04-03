@@ -1540,7 +1540,8 @@ document.getElementById('e-file').addEventListener('change', function(e){
           groupId: typeof t.groupId === 'string' ? t.groupId : null,
           createdAt: typeof t.createdAt === 'string' ? t.createdAt : null,
           updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : null,
-          remindDate: typeof t.remindDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(t.remindDate) ? t.remindDate : null
+          remindDate: typeof t.remindDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(t.remindDate) ? t.remindDate : null,
+          tags: Array.isArray(t.tags) ? t.tags.filter(function(tag){ return typeof tag === 'string'; }).slice(0, 20) : null
         };
       });
       // Validate groups
@@ -1563,6 +1564,8 @@ document.getElementById('e-file').addEventListener('change', function(e){
       var nameToGid = {};
       groups.forEach(function(g){ nameToGid[g.name.toLowerCase()] = g.id; });
 
+      // [FIX] 墓碑必须在 groups.forEach 之前加载，否则 importTombstones 为 undefined
+      var importTombstones = load('tombstones', {});
       // Import groups, remap IDs
       var gidMap = {};
       data.groups.forEach(function(g){
@@ -1582,8 +1585,6 @@ document.getElementById('e-file').addEventListener('change', function(e){
       });
       // Import tasks with remapped groupIds + content-level dedup
       var existingContentKeys = new Set(tasks.map(function(t){ return t.name + '|' + t.date; }));
-      // [FIX] 加载墓碑，过滤掉被本地删除的条目，防止复活
-      var importTombstones = load('tombstones', {});
       data.tasks.forEach(function(t){
         var contentKey = t.name + '|' + t.date;
         if(existingContentKeys.has(contentKey)){
@@ -1907,7 +1908,7 @@ function renderMain(){
           var q2 = gs.value.trim().toLowerCase();
           if(!q2) return;
           var matches = tasks.filter(function(t){
-            return t.name.toLowerCase().includes(q2) || (t.note || '').toLowerCase().includes(q2);
+            return t.name.toLowerCase().includes(q2) || (t.note || '').toLowerCase().includes(q2) || (t.tags || []).some(function(tag){ return tag.toLowerCase().includes(q2); });
           }).sort(function(a,b){ return b.date.localeCompare(a.date); }).slice(0, 20);
           if(matches.length >= 1){ navigateToTask(matches[0]); }
           else toast('没有找到匹配的记录', 'info');
@@ -1920,7 +1921,7 @@ function renderMain(){
       else if(e.key === 'Enter'){
         e.preventDefault();
         var q3 = gs.value.toLowerCase().trim();
-        var matches2 = tasks.filter(function(t){ return t.name.toLowerCase().includes(q3) || (t.note || '').toLowerCase().includes(q3); }).sort(function(a,b){ return b.date.localeCompare(a.date); });
+        var matches2 = tasks.filter(function(t){ return t.name.toLowerCase().includes(q3) || (t.note || '').toLowerCase().includes(q3) || (t.tags || []).some(function(tag){ return tag.toLowerCase().includes(q3); }); }).sort(function(a,b){ return b.date.localeCompare(a.date); });
         if(matches2.length) navigateToTask(matches2[0]);
       }
       else if(e.key === 'Escape'){ gsDrop.className = 'search-drop'; gs.blur(); return; }
