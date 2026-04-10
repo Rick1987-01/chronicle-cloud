@@ -2041,13 +2041,24 @@ function renderToday(el){
   } else if(wc.thisWeek > 0){
     insights.push('本周已记录 <b>' + wc.thisWeek + '</b> 条');
   }
-  // Most active weekday
-  var wdC = [0,0,0,0,0,0,0];
-  tasks.forEach(function(t){ var d = parseDate(t.date); if(d) wdC[getDayIndex(d)]++; });
-  var wdMax = 0, wdMaxIdx = 0;
-  wdC.forEach(function(c,i){ if(c > wdMax){ wdMax = c; wdMaxIdx = i; } });
+  // Most active weekday this week (by unique days, not total records)
+  var weekStart = fmtDate(startOfWeek(new Date()));
   var wdNames = ['周一','周二','周三','周四','周五','周六','周日'];
-  if(wdMax > 0 && tasks.length > 7) insights.push('你最活跃的一天是 <b>' + wdNames[wdMaxIdx] + '</b>（' + wdMax + ' 次记录）');
+  var wdDays = [{},{},{},{},{},{},{}]; // sets of unique dates per weekday
+  tasks.forEach(function(t){
+    if(t.date >= weekStart && t.date <= today){
+      var d = parseDate(t.date);
+      if(d) wdDays[getDayIndex(d)][t.date] = true;
+    }
+  });
+  var wdCounts = wdDays.map(function(s){ return Object.keys(s).length; });
+  var wdMax = 0, wdMaxIdx = 0, wdTieCount = 0;
+  wdCounts.forEach(function(c,i){
+    if(c > wdMax){ wdMax = c; wdMaxIdx = i; wdTieCount = 1; }
+    else if(c === wdMax && c > 0){ wdTieCount++; }
+  });
+  var wdTotalDays = wdCounts.reduce(function(s,c){ return s + (c > 0 ? 1 : 0); }, 0);
+  if(wdMax > 0 && wdTotalDays >= 2 && wdTieCount === 1) insights.push('本周 <b>' + wdNames[wdMaxIdx] + '</b> 最活跃（' + wdMax + ' 天有记录）');
 
   // Compare section
   var delta = todayTasks.length - yesterdayTasks.length;
@@ -2632,10 +2643,16 @@ function renderStatsInsights(catData, weekData, dateMap, wc){
     else if(pct < 0) insights.push('📉 本周记录量比上周少 <b>' + Math.abs(pct) + '%</b>（' + wc.thisWeek + ' vs ' + wc.lastWeek + '）');
   }
 
-  // Best weekday
-  var maxW = 0, maxWi = 0;
-  weekData.forEach(function(d,i){ if(d.value > maxW){ maxW = d.value; maxWi = i; } });
-  if(maxW > 0) insights.push('📅 你最活跃的一天是 <b>' + weekData[maxWi].name + '</b>（共 ' + maxW + ' 次）');
+  // Best weekday (by unique days across all history, not total records)
+  var histWdDays = [{},{},{},{},{},{},{}];
+  tasks.forEach(function(t){ var d = parseDate(t.date); if(d) histWdDays[getDayIndex(d)][t.date] = true; });
+  var histWdCounts = histWdDays.map(function(s){ return Object.keys(s).length; });
+  var maxW = 0, maxWi = 0, histTieCount = 0;
+  histWdCounts.forEach(function(c,i){
+    if(c > maxW){ maxW = c; maxWi = i; histTieCount = 1; }
+    else if(c === maxW && c > 0){ histTieCount++; }
+  });
+  if(maxW > 0 && histTieCount === 1) insights.push('📅 历史上<b>' + weekData[maxWi].name + '</b>记录最多（' + maxW + ' 天有记录）');
 
   // Category balance: if one category dominates >70%
   var total = catData.reduce(function(s,d){ return s + d.value; }, 0);
@@ -2650,12 +2667,16 @@ function renderStatsInsights(catData, weekData, dateMap, wc){
     var gt = tasks.filter(function(t){ return t.groupId === g.id; }).sort(function(a,b){ return b.date.localeCompare(a.date); });
     if(gt.length >= 2 && diffDays(gt[0].date, today) >= 14) staleCount++;
   });
-  if(staleCount > 0) insights.push('⏳ 有 <b>' + staleCount + '</b> 个任务已超过 14 天未记录');
+  if(staleCount > 0) insights.push('⏳ 有 <b>' + staleCount + '</b> 个分组已超过 14 天未记录');
 
-  // Average daily
+  // Average daily (by total calendar days since first record, not active days)
   if(totalDays > 3){
-    var avg = (tasks.length / totalDays).toFixed(1);
-    insights.push('📊 平均每天 <b>' + avg + '</b> 条记录');
+    var sortedDates = Object.keys(getDateSet()).sort();
+    var calendarDays = diffDays(sortedDates[0], today) + 1; // from first record to today inclusive
+    if(calendarDays > 0){
+      var avg = (tasks.length / calendarDays).toFixed(1);
+      insights.push('📊 自首次记录以来，平均每天 <b>' + avg + '</b> 条记录');
+    }
   }
 
   if(!insights.length) return '';
