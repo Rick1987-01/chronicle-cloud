@@ -2041,24 +2041,17 @@ function renderToday(el){
   } else if(wc.thisWeek > 0){
     insights.push('本周已记录 <b>' + wc.thisWeek + '</b> 条');
   }
-  // Most active weekday this week (by unique days, not total records)
+  // Active days this week
   var weekStart = fmtDate(startOfWeek(new Date()));
   var wdNames = ['周一','周二','周三','周四','周五','周六','周日'];
-  var wdDays = [{},{},{},{},{},{},{}]; // sets of unique dates per weekday
+  var weekActiveDays = [];
   tasks.forEach(function(t){
     if(t.date >= weekStart && t.date <= today){
       var d = parseDate(t.date);
-      if(d) wdDays[getDayIndex(d)][t.date] = true;
+      if(d){ var idx = getDayIndex(d); if(weekActiveDays.indexOf(wdNames[idx]) === -1) weekActiveDays.push(wdNames[idx]); }
     }
   });
-  var wdCounts = wdDays.map(function(s){ return Object.keys(s).length; });
-  var wdMax = 0, wdMaxIdx = 0, wdTieCount = 0;
-  wdCounts.forEach(function(c,i){
-    if(c > wdMax){ wdMax = c; wdMaxIdx = i; wdTieCount = 1; }
-    else if(c === wdMax && c > 0){ wdTieCount++; }
-  });
-  var wdTotalDays = wdCounts.reduce(function(s,c){ return s + (c > 0 ? 1 : 0); }, 0);
-  if(wdMax > 0 && wdTotalDays >= 2 && wdTieCount === 1) insights.push('本周 <b>' + wdNames[wdMaxIdx] + '</b> 最活跃（' + wdMax + ' 天有记录）');
+  if(weekActiveDays.length > 0) insights.push('本周已打卡 <b>' + weekActiveDays.join('、') + '</b>（' + weekActiveDays.length + ' 天）');
 
   // Compare section
   var delta = todayTasks.length - yesterdayTasks.length;
@@ -2643,16 +2636,12 @@ function renderStatsInsights(catData, weekData, dateMap, wc){
     else if(pct < 0) insights.push('📉 本周记录量比上周少 <b>' + Math.abs(pct) + '%</b>（' + wc.thisWeek + ' vs ' + wc.lastWeek + '）');
   }
 
-  // Best weekday (by unique days across all history, not total records)
-  var histWdDays = [{},{},{},{},{},{},{}];
-  tasks.forEach(function(t){ var d = parseDate(t.date); if(d) histWdDays[getDayIndex(d)][t.date] = true; });
-  var histWdCounts = histWdDays.map(function(s){ return Object.keys(s).length; });
-  var maxW = 0, maxWi = 0, histTieCount = 0;
-  histWdCounts.forEach(function(c,i){
-    if(c > maxW){ maxW = c; maxWi = i; histTieCount = 1; }
-    else if(c === maxW && c > 0){ histTieCount++; }
-  });
-  if(maxW > 0 && histTieCount === 1) insights.push('📅 历史上<b>' + weekData[maxWi].name + '</b>记录最多（' + maxW + ' 天有记录）');
+  // Peak day (single date with most records)
+  var peakDate = null, peakCount = 0;
+  var dateCounts = {};
+  tasks.forEach(function(t){ dateCounts[t.date] = (dateCounts[t.date] || 0) + 1; });
+  Object.keys(dateCounts).forEach(function(d){ if(dateCounts[d] > peakCount){ peakCount = dateCounts[d]; peakDate = d; } });
+  if(peakDate && peakCount > 1) insights.push('📅 单日最高纪录：<b>' + peakDate + '</b>（' + peakCount + ' 条）');
 
   // Category balance: if one category dominates >70%
   var total = catData.reduce(function(s,d){ return s + d.value; }, 0);
@@ -2690,7 +2679,8 @@ function renderStatsInsights(catData, weekData, dateMap, wc){
 function renderStats(el){
   var totalDays = Object.keys(getDateSet()).length;
   var wdN = ['周一','周二','周三','周四','周五','周六','周日'], wdC = [0,0,0,0,0,0,0];
-  tasks.forEach(function(t){ var d = parseDate(t.date); if(d) wdC[getDayIndex(d)]++; });
+  var statsWeekStart = fmtDate(startOfWeek(new Date()));
+  tasks.forEach(function(t){ if(t.date >= statsWeekStart){ var d = parseDate(t.date); if(d) wdC[getDayIndex(d)]++; } });
   var wdD = wdN.map(function(n,i){ return {name: n, value: wdC[i]}; });
 
   // [P2 FIX] Pre-build category and date maps
