@@ -1501,7 +1501,7 @@ document.getElementById('e-close').addEventListener('click', function(){ exportB
 exportBg.addEventListener('click', function(e){ if(e.target === exportBg) exportBg.classList.remove('open'); });
 
 document.getElementById('e-export').addEventListener('click', function(){
-  var data = { tasks: tasks, groups: groups, exportedAt: new Date().toISOString(), version: EXPORT_VERSION };
+  var data = { tasks: tasks, groups: groups, tombstones: loadTombstones(), exportedAt: new Date().toISOString(), version: EXPORT_VERSION };
   var blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -2060,7 +2060,7 @@ function renderToday(el){
 
   el.innerHTML = '<div class="' + (_firstRender ? 'anim ' : '') + 'today-wrap">'
     + '<div class="today-header">'
-    + '<h2>' + today.replace(/-/g, '/') + ' · 今天</h2>'
+    + '<h2>' + today.replace(/-/g, '/') + ' · ' + ['周日','周一','周二','周三','周四','周五','周六'][new Date().getDay()] + ' · 今天</h2>'
     + '<div class="today-streak">'
     + '<span class="streak-dot ' + (todayChecked ? 'done' : 'pending') + '"></span>'
     + '<span>' + (todayChecked ? '已打卡' : '尚未打卡') + ' · 连续 ' + streak + ' 天</span>'
@@ -3688,11 +3688,13 @@ window.dispatchEvent(new CustomEvent('chronicle:ready'));
     log('TEST', '=== API 诊断结束 ===', 'warn');
   };
 
-  // 启动
-  if(document.readyState==='loading'){
-    document.addEventListener('DOMContentLoaded', function(){ injectBtn(); log('DBG','调试面板已加载','ok'); });
-  } else {
-    injectBtn(); log('DBG','调试面板已加载','ok');
+  // 启动（默认隐藏，加 #debug 或 localStorage.chr_debug='1' 启用）
+  if(location.hash === '#debug' || localStorage.getItem('chr_debug') === '1'){
+    if(document.readyState==='loading'){
+      document.addEventListener('DOMContentLoaded', function(){ injectBtn(); log('DBG','调试面板已加载','ok'); });
+    } else {
+      injectBtn(); log('DBG','调试面板已加载','ok');
+    }
   }
 })();
 </script>
